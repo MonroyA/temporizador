@@ -702,7 +702,32 @@
   .off-row span { font-size: 12.5px; color: var(--muted); }
   .off-bar { height: 6px; margin-top: 8px; border-radius: 6px; background: var(--chip); overflow: hidden; }
   .off-bar i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--blue), var(--cyan)); transition: width .3s; }
-  .brand-col { position: relative; display: grid; justify-items: center; }
+  /* ---- Dentro de una lista: la cabecera se encoge (la tarjeta sube y tapa el fondo) y la fecha
+     toma el lugar de «ALABANZA». Al salir, la cabecera vuelve a bajar con su logo. ---- */
+  :root { --hero-full: calc(178px + var(--safe-t)); --hero-mini: calc(98px + var(--safe-t)); }
+  body.demo { --hero-full: calc(200px + var(--safe-t)); --hero-mini: calc(114px + var(--safe-t)); }
+  @media (min-width: 700px) { :root { --hero-full: calc(200px + var(--safe-t)); } body.demo { --hero-full: calc(222px + var(--safe-t)); } }
+  .hero.compact, body.demo .hero.compact { height: var(--hero-mini); }
+  .hero.compact .hero-logo { opacity: 0; }
+  .hero.compact + .sheetbody .avatar-float { display: none; }
+  .ctitle { display: block; max-width: 100%; color: #fff; font: 800 19px/1.2 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 2px 12px rgba(0,0,0,.45); }
+  .hero.shrink { animation: heroShrink .62s cubic-bezier(.45,.05,.25,1) both; }
+  .hero.shrink .hero-logo { animation: logoOut .4s ease both; }
+  .hero.shrink .ctitle { animation: ctIn .62s cubic-bezier(.45,.05,.25,1) both; }
+  #view .hero.shrink + .sheetbody { animation: cardUp .62s cubic-bezier(.45,.05,.25,1) both; }
+  .hero.grow { animation: heroGrow .62s cubic-bezier(.45,.05,.25,1) both; }
+  .hero.grow .hero-logo { animation: logoIn .6s ease .12s both; }
+  .hero.grow .pill-logo.al { animation: pillIn .55s cubic-bezier(.2,.8,.2,1) .1s both; }
+  #view .hero.grow + .sheetbody { animation: cardDown .62s cubic-bezier(.45,.05,.25,1) both; }
+  @keyframes heroShrink { from { height: var(--hero-full); } }
+  @keyframes heroGrow { from { height: var(--hero-mini); } }
+  @keyframes logoOut { from { opacity: 1; } to { opacity: 0; transform: translateY(-14px) scale(.92); } }
+  @keyframes logoIn { from { opacity: 0; transform: translateY(-14px) scale(.92); } }
+  @keyframes ctIn { from { opacity: 0; transform: translateY(70px) scale(1.15); } 40% { opacity: .6; } }
+  @keyframes pillIn { from { opacity: 0; transform: translateY(14px) scale(.9); } }
+  @keyframes cardUp { from { transform: translateY(28px); } }
+  @keyframes cardDown { from { transform: translateY(-24px); } }
+  .brand-col { position: relative; display: grid; justify-items: center; min-width: 0; }
   .off-tag { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); margin-top: 7px; padding: 4px 12px; border-radius: 99px; background: rgba(229,72,77,.92); color: #fff; font: 800 11px var(--font); letter-spacing: .12em; white-space: nowrap; box-shadow: 0 4px 12px rgba(0,0,0,.3); animation: fadeUp .4s var(--ease) both; }
 
   /* ---- Modo ligero (teléfonos con menos fuerza): sin cristal difuminado, sin animaciones que se
