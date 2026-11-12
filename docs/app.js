@@ -200,7 +200,9 @@ function demoBackend() {
     async listFiles(song) { return list(db.files[song]).map(({ data, ...meta }) => meta); },
     async addFile(song, meta, base64) {
       if (base64.length > 1.5e6) throw new Error('En la demostración los archivos deben pesar menos de 1 MB');
-      db.files[song] = { ...(db.files[song] || {}), [uid8()]: { ...meta, data: base64, at: Date.now() } }; save();
+      const id = uid8();
+      db.files[song] = { ...(db.files[song] || {}), [id]: { ...meta, data: base64, at: Date.now() } }; save();
+      return id;
     },
     async getFile(song, id) { return db.files[song][id].data; },
     async deleteFile(song, id) { delete db.files[song][id]; save(); },
@@ -304,6 +306,7 @@ async function firebaseBackend() {
       const n = Math.ceil(base64.length / CHUNK);
       for (let i = 0; i < n; i++) await F.setDoc(D('songs', song, 'files', ref.id, 'chunks', String(i)), { data: base64.slice(i * CHUNK, (i + 1) * CHUNK) });
       await F.setDoc(ref, { ...meta, chunks: n, size: base64.length, at: Date.now() });
+      return ref.id;
     },
     // Se comprueba que llegaron todos los trozos y el tamaño exacto; si no, es un error (y no se
     // guarda una copia rota en el teléfono).
@@ -1187,6 +1190,7 @@ const FILE_CACHE = 'listas-archivos';
 const fileMem = new Map(); // id de archivo -> Promise<{ url, type, blob }>
 const filesOf = new Map(); // id de canto -> Promise<[datos de sus archivos]>
 const b64ToBlob = async (b64, type) => (await fetch(`data:${type};base64,${b64}`)).blob();
+const isAudio = (f) => /^audio\//.test((f && f.type) || '') || (f && f.kind === 'audio');
 function songFiles(songId) {
   if (filesOf.has(songId)) return filesOf.get(songId);
   const p = Promise.resolve(api.listFiles(songId)).then((l) => (l || []).sort((a, b) => (a.at || 0) - (b.at || 0)));
@@ -1238,7 +1242,7 @@ function prefetchSongs(ids) {
     if (!id || prefetched.has(id)) continue;
     prefetched.add(id);
     prefetchQ = prefetchQ.then(async () => {
-      const files = await songFiles(id).catch(() => []);
+      const files = (await songFiles(id).catch(() => [])).filter((f) => !isAudio(f));
       for (const f of files) await fileData(id, f).catch(() => {});
       if (files.some((f) => f.type === 'application/pdf')) loadPdfJs().catch(() => {});
     });
@@ -1367,7 +1371,8 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
         || '<div class="cr-msg">Este canto aún no tiene letra.</div>';
       return;
     }
-    songFiles(id).catch(() => []).then((files) => {
+    songFiles(id).catch(() => []).then((all) => {
+      const files = all.filter((f) => !isAudio(f)); // los audios de referencia no son charts
       const s = songById(id) || {};
       box.innerHTML = '';
       for (const f of files) {
@@ -1518,7 +1523,7 @@ function viewService(date, selId) {
       const k = val(it, 'key');
       const notes = it.notes ? `<span class="sv-tag">✎ ${esc(it.notes.slice(0, 40))}${it.notes.length > 40 ? '…' : ''}</span>` : '';
       return `<div class="sv-item${it.id === sel ? ' open' : ''}" data-item="${it.id}">
-        <button class="sv-head" data-sel="${it.id}"><span class="sv-num">${i + 1}</span><span class="sv-t"><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}${ytId(val(it, 'youtube')) ? ' · ▶ video' : ''}</small>${notes}</span>
+        <button class="sv-head" data-sel="${it.id}"><span class="sv-num">${i + 1}</span><span class="sv-t"><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}${(it.refType || (it.audioId ? 'audio' : '')) === 'audio' && it.audioId ? ' · 🎙 audio' : ytId(val(it, 'youtube')) ? ' · ▶ video' : ''}</small>${notes}</span>
           <span class="sv-key">${esc(k || '—')}</span><span class="sv-chev">›</span></button>
       </div>`;
     }).join('') || `<div class="empty">Esta lista aún no tiene cantos.${canAdd() ? '<br>Toca «＋ Agregar».' : ''}</div>`;
@@ -1541,6 +1546,72 @@ function viewService(date, selId) {
     const row = sel && $('svList').querySelector(`[data-item="${sel}"]`);
     if (row) setTimeout(() => row.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }), 60);
   }
+  // ---- Referencia: video de YouTube o audio grabado por nosotros ----
+  const refTypeOf = (it) => it.refType || (it.audioId ? 'audio' : 'youtube');
+  let recorder = null;
+  function renderAudioRef(it) {
+    const box = $('dtRefAudio');
+    if (!box) return;
+    const edit = canEdit(it);
+    box.innerHTML = `<div id="dtAudioPlay">${it.audioId ? '<div class="small muted">Cargando el audio…</div>' : '<div class="small muted">Aún no hay un audio nuestro para este canto.</div>'}</div>
+      ${edit ? `<div class="audio-acts">
+        <label class="btn ghost" style="flex:1">⬆ Subir audio<input type="file" id="dtAudioUp" accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.opus" hidden></label>
+        ${window.MediaRecorder ? '<button class="btn ghost" type="button" id="dtRec" style="flex:1">🎙 Grabar</button>' : ''}
+      </div>${it.audioId ? '<button class="link small" type="button" id="dtAudioDel" style="color:var(--red)">Quitar este audio</button>' : ''}` : ''}`;
+    if (it.audioId) {
+      songFiles(it.songId).then((files) => {
+        const f = files.find((x) => x.id === it.audioId);
+        if (!f) { $('dtAudioPlay').innerHTML = '<div class="small muted">Este audio ya no está.</div>'; return; }
+        return fileData(it.songId, f).then((d) => {
+          if (!$('dtAudioPlay')) return;
+          $('dtAudioPlay').innerHTML = `<audio controls preload="metadata" src="${d.url}"></audio><div class="small muted">${esc(f.name || 'Audio')}${f.byName ? ' · ' + esc(f.byName) : ''}</div>`;
+        });
+      }).catch(() => { if ($('dtAudioPlay')) $('dtAudioPlay').innerHTML = '<div class="small muted">No se pudo cargar el audio. Revisa la conexión.</div>'; });
+    }
+    if (!edit) return;
+    const save = async (blob, name) => {
+      if (blob.size > 8e6) { toast('El audio debe pesar menos de 8 MB (unos 8 minutos)'); return; }
+      toast('Subiendo el audio…');
+      try {
+        const base64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = rej; r.readAsDataURL(blob); });
+        const type = blob.type || 'audio/mp4';
+        const fid = await api.addFile(it.songId, { name, type, size: base64.length, by: user.uid, byName: me.name, kind: 'audio' }, base64);
+        filesOf.delete(it.songId);
+        await api.updateItem(date, it.id, { refType: 'audio', audioId: fid });
+        toast('✓ Audio guardado: el equipo ya lo puede escuchar');
+      } catch (e) { toast(e.message || 'No se pudo subir el audio'); }
+    };
+    $('dtAudioUp').onchange = (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) save(f, f.name); };
+    if ($('dtAudioDel')) $('dtAudioDel').onclick = async () => { if (confirm('¿Quitar este audio de la referencia?')) await api.updateItem(date, it.id, { audioId: '', refType: 'youtube' }); };
+    if ($('dtRec')) $('dtRec').onclick = async () => {
+      const btn = $('dtRec');
+      if (recorder) { recorder.stop(); return; }
+      let stream;
+      try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); } catch { toast('Permite el micrófono para grabar'); return; }
+      const mime = ['audio/mp4', 'audio/webm;codecs=opus', 'audio/webm'].find((m) => MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) || '';
+      const chunks = [];
+      recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      const t0 = Date.now();
+      const tick = setInterval(() => { const s = Math.round((Date.now() - t0) / 1000); if (btn.isConnected) btn.textContent = `⏹ Detener · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }, 500);
+      btn.classList.add('rec');
+      btn.textContent = '⏹ Detener · 0:00';
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      recorder.onstop = () => {
+        clearInterval(tick);
+        stream.getTracks().forEach((t) => t.stop());
+        const type = (recorder.mimeType || mime || 'audio/webm').split(';')[0];
+        recorder = null;
+        if (btn.isConnected) { btn.classList.remove('rec'); btn.textContent = '🎙 Grabar'; }
+        const blob = new Blob(chunks, { type });
+        const when = new Date().toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+        if (blob.size) save(blob, `Grabación de ${me.name} · ${when}.${type.includes('mp4') ? 'm4a' : 'webm'}`);
+      };
+      recorder.start(1000);
+      haptic(10);
+    };
+  }
+  viewSubs.push(() => { if (recorder) { try { recorder.stop(); } catch { /* ya detenido */ } } });
+
   function renderDetail() {
     const it = items.find((x) => x.id === sel);
     if (!it || !$('svDetail')) return;
@@ -1555,8 +1626,11 @@ function viewService(date, selId) {
     const k = val(it, 'key');
     $('svDetail').innerHTML = `
       ${it.byName ? `<div class="small muted" style="margin:0 2px 8px">Agregado por ${esc(it.byName)}</div>` : ''}
-      <div class="field"><div class="lab">▶ Referencia</div>${yt ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>` : '<div class="small muted">Sin enlace de YouTube.</div>'}
-        ${canEdit(it) ? `<div class="send"><input id="dtYt" placeholder="Pega el enlace de YouTube" value="${esc(it.youtube || '')}"><button data-saveyt>Guardar</button></div>` : ''}</div>
+      <div class="field"><div class="lab">▶ Referencia</div>
+        <div class="tabs ref-tabs" id="dtRefTabs">${[['youtube', '▶ Video de YouTube'], ['audio', '🎙 Audio nuestro']].map(([k, n]) => `<button type="button" data-ref="${k}" class="${refTypeOf(it) === k ? 'on' : ''}">${n}</button>`).join('')}</div>
+        <div id="dtRefYt"${refTypeOf(it) === 'youtube' ? '' : ' hidden'}>${yt ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>` : '<div class="small muted">Sin enlace de YouTube.</div>'}
+          ${canEdit(it) ? `<div class="send"><input id="dtYt" placeholder="Pega el enlace de YouTube" value="${esc(it.youtube || '')}"><button data-saveyt>Guardar</button></div>` : ''}</div>
+        <div id="dtRefAudio"${refTypeOf(it) === 'audio' ? '' : ' hidden'}></div></div>
       <div class="field"><div class="lab">♪ Tonalidad <b style="color:var(--blue);margin-left:auto;font-size:15px">${esc(k || '—')}</b></div>
         ${canEdit(it) ? `<div class="keys">${KEYS.map((x) => `<button data-key="${x}" class="${k.replace('m', '') === x ? 'on' : ''}">${x}</button>`).join('')}</div>
         <div class="keyline"><button class="mode${/m$/.test(k) ? ' on' : ''}" data-minor>Menor</button><span class="small muted">${song.key && song.key !== k ? 'Original: ' + esc(song.key) : ''}</span></div>` : ''}</div>
@@ -1566,6 +1640,16 @@ function viewService(date, selId) {
       ${it.songId ? `<div class="field"><div class="lab">📄 Charts, partituras y letra</div><button class="btn ghost" data-go="#/cantos" data-songopen="${it.songId}">Abrir el canto</button></div>` : ''}
       ${canEditList(svc()) ? `<div class="reorder"><button data-move="-1">↑ Subir</button><button data-move="1">↓ Bajar</button></div>` : ''}
       ${canEdit(it) ? '<button class="btn red" style="margin-top:12px" data-delitem>Quitar de esta lista</button>' : ''}`;
+    renderAudioRef(it);
+    // Video o audio: cualquiera puede mirar las dos; quien edita la lista elige cuál queda marcada.
+    $('dtRefTabs').onclick = (e) => {
+      const b = e.target.closest('[data-ref]');
+      if (!b) return;
+      $('dtRefTabs').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      $('dtRefYt').hidden = b.dataset.ref !== 'youtube';
+      $('dtRefAudio').hidden = b.dataset.ref !== 'audio';
+      if (canEdit(it) && refTypeOf(it) !== b.dataset.ref) api.updateItem(date, it.id, { refType: b.dataset.ref }).catch(() => {});
+    };
     if (commentsOff) commentsOff();
     commentsOff = api.watchComments(date, it.id, (list) => { comments = list; renderComments(); });
   }
@@ -1856,13 +1940,24 @@ function openSong(id, mode = 'letra') {
       prefetched.delete(id);
       prefetchSongs([id]);
       if (!$('soFiles')) return;
-      $('soFiles').innerHTML = files.map((f) => `<button class="file" data-file="${f.id}" data-type="${esc(f.type)}">${f.type === 'application/pdf' ? '📕' : '🖼'}<span>${esc(f.name)}</span>${(isMod() || f.by === user.uid) ? `<i data-delfile="${f.id}">✕</i>` : ''}</button>`).join('') || '<span class="small muted">Aún no hay charts ni partituras.</span>';
+      $('soFiles').innerHTML = files.map((f) => `<button class="file" data-file="${f.id}" data-type="${esc(f.type)}">${isAudio(f) ? '🎙' : f.type === 'application/pdf' ? '📕' : '🖼'}<span>${esc(f.name)}</span>${(isMod() || f.by === user.uid) ? `<i data-delfile="${f.id}">✕</i>` : ''}</button>`).join('') || '<span class="small muted">Aún no hay charts ni partituras.</span>';
     });
     $('soFiles').onclick = async (e) => {
       const del = e.target.closest('[data-delfile]');
       if (del) { e.stopPropagation(); if (confirm('¿Borrar este archivo?')) { await api.deleteFile(id, del.dataset.delfile); toast('Archivo borrado'); } return; }
       const f = e.target.closest('[data-file]');
       if (!f) return;
+      // Un audio se escucha ahí mismo.
+      if (/^audio\//.test(f.dataset.type)) {
+        const meta = (await songFiles(id)).find((x) => x.id === f.dataset.file);
+        if (!meta) return;
+        const d = await fileData(id, meta).catch(() => null);
+        if (!d) { toast('No se pudo cargar el audio'); return; }
+        let pl = $('soAudio');
+        if (!pl) { pl = document.createElement('audio'); pl.id = 'soAudio'; pl.controls = true; pl.style.cssText = 'width:100%;margin-top:8px'; $('soFiles').after(pl); }
+        pl.src = d.url; pl.play().catch(() => {});
+        return;
+      }
       // Se abre en el lector de la app (pantalla completa), no en otra pestaña.
       closeSheet(true);
       openChartReader({ songIds: [id] });
@@ -1944,6 +2039,7 @@ function editSong(id, opts = {}) {
     ${full ? `<label class="l">Letra por partes</label>
     <div id="edSecs"></div>
     <div class="sec-add" id="edAdd">${SECTIONS.map((n) => `<button data-add="${n}" class="k-${secKind(n)}">＋ ${n}</button>`).join('')}</div>
+    <div class="emo-bar" id="edEmojis"><span>Agregar a la letra:</span>${['🎺', '🎻', '🎸', '🎤', '🎵'].map((x) => `<button type="button" data-emo="${x}">${x}</button>`).join('')}</div>
     <div class="split-row"><span>Diapositivas de</span><select id="edSplitN">${[2, 3, 4].map((n) => `<option value="${n}"${n === splitN() ? ' selected' : ''}>${n} líneas</option>`).join('')}</select><button type="button" class="link" id="edSplit">Dividir de nuevo</button></div>
     <div class="small muted">Como en el Temporizador: pega la letra y se divide sola en diapositivas. Si pegas la canción con «[Coro]», «[Verso 1]»…, se separa sola en sus partes.</div>
     <label class="l">Chart (acordes sobre la letra)</label><textarea id="edChart" class="chart" placeholder="G          D&#10;Grande eres Jehová">${esc(s.chart || '')}</textarea>
@@ -1996,6 +2092,23 @@ function editSong(id, opts = {}) {
         secs[i].body = ta.value;
         toast(`Letra dividida en diapositivas de ${splitN()} líneas`);
       });
+      // Íconos 🎺 🎻 🎸 🎤 🎵: van a la parte donde estabas escribiendo, en el lugar del cursor
+      // (si no tocaste ninguna, al final de la última).
+      let lastTa = null;
+      $('edSecs').addEventListener('focusin', (e) => { if (e.target.matches('[data-body]')) lastTa = e.target; });
+      $('edEmojis').addEventListener('pointerdown', (e) => { if (e.target.closest('[data-emo]')) e.preventDefault(); });
+      $('edEmojis').onclick = (e) => {
+        const b = e.target.closest('[data-emo]');
+        if (!b) return;
+        let ta = lastTa && lastTa.isConnected ? lastTa : $('edSecs').querySelector('[data-body]:last-of-type') || [...$('edSecs').querySelectorAll('[data-body]')].pop();
+        if (!ta) { toast('Primero agrega una parte (＋ Verso, ＋ Coro…)'); return; }
+        const at = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? ta.value.length;
+        const before = ta.value.slice(0, at);
+        ta.setRangeText((before && !/\s$/.test(before) ? ' ' : '') + b.dataset.emo + ' ', at, end, 'end');
+        secs[Number(ta.closest('[data-i]').dataset.i)].body = ta.value;
+        ta.focus({ preventScroll: true });
+        haptic(5);
+      };
       $('edSplitN').onchange = () => { try { localStorage.setItem('listas-dividir', $('edSplitN').value); } catch { /* sin almacenamiento */ } };
       $('edSplit').onclick = () => { secs.forEach((x) => { x.body = splitSlides(x.body, splitN(), true); }); renderSecs(); toast(`Dividido en diapositivas de ${splitN()} líneas`); };
       $('edSecs').onclick = async (e) => {
