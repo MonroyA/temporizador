@@ -1,10 +1,12 @@
 // Service worker: la app abre al instante (y sin conexión muestra la última versión guardada).
 // Las listas se leen siempre de la nube; esto solo guarda los archivos de la app.
-const CACHE = 'listas-v18';
+const CACHE = 'listas-v19';
 const FILES = ['./', './index.html', './app.js', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './medios-sol.png', './medios-aguila.png'];
 
+// Los archivos se piden siempre frescos al servidor (GitHub Pages deja que el teléfono los guarde
+// 10 minutos: por eso a veces no se veían los cambios recién subidos).
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 // Al actualizar la app se borra la copia vieja de sus archivos, pero NUNCA los charts guardados
 // en el teléfono («listas-archivos»): esos siguen sirviendo.
@@ -25,7 +27,7 @@ self.addEventListener('fetch', (e) => {
   }
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   e.respondWith(
-    fetch(e.request).then((res) => {
+    fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' }).then((res) => {
       const copy = res.clone();
       caches.open(CACHE).then((c) => c.put(e.request, copy));
       return res;
