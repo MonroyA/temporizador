@@ -401,9 +401,9 @@ addEventListener('hashchange', () => { trackNav(); route(); });
 // del navegador). La navegación está en la barra de abajo.
 function hero({ title = '', back = '', tall = false } = {}) {
   const chip = resumeChip();
-  return `<div class="hero${tall ? ' tall' : ''}"><div class="tools">` +
+  return `<div class="hero${tall ? ' tall' : ''}"><div class="hero-logo" aria-hidden="true"><div class="hl-art"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></div></div><div class="tools">` +
     (chip || (back ? `<button class="round" data-go="${back}" aria-label="Atrás">‹</button>` : '<span class="round ghost"></span>')) +
-    `<button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio"><span class="al-bg" aria-hidden="true"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></span>${brandWord()}</button>` +
+    `<button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio">${brandWord()}</button>` +
     (user && me && isMember() ? `<button class="round bell${unread() ? ' has' : ''}" data-go="#/avisos" aria-label="Avisos">${bellInner()}</button>` : '<span class="round ghost"></span>') + '</div>' +
     (title ? `<h1>${esc(title)}</h1>` : '') + '</div>';
 }
@@ -1331,8 +1331,9 @@ function loadPdfJs() {
 async function renderPdf(box, blob) {
   const lib = await loadPdfJs();
   const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
-  const w = box.clientWidth || innerWidth;
-  const dpr = Math.min(2, devicePixelRatio || 1);
+  // Se dibuja con más detalle del necesario para que al hacer zoom se siga leyendo nítido.
+  const w = Math.min(box.clientWidth || innerWidth, innerWidth);
+  const dpr = Math.min(3, (devicePixelRatio || 1) * 1.5);
   for (let n = 1; n <= doc.numPages; n++) {
     const page = await doc.getPage(n);
     const base = page.getViewport({ scale: 1 });
@@ -1384,9 +1385,29 @@ function showFile(fb, songId, f) {
 // es instantáneo. Se preparan también el anterior y el siguiente. Deslizar ← → o tocar los
 // números de abajo cambia de canto; «‹ Lista» vuelve.
 let reader = null;
+// ---- Marcas sobre el chart (dibujos y notas). Se guardan solo en este teléfono, por lista y
+// canto, y se borran solas cuando pasa la fecha de la lista. ----
+const INK_KEY = 'listas-marcas';
+const inkAll = () => { try { return JSON.parse(localStorage.getItem(INK_KEY) || '{}') || {}; } catch { return {}; } };
+function inkSaveAll(all) {
+  try { localStorage.setItem(INK_KEY, JSON.stringify(all)); } catch { toast('El teléfono no tiene espacio para guardar más marcas'); }
+}
+(function inkCleanup() {
+  const all = inkAll();
+  const t = today();
+  let changed = false;
+  for (const k of Object.keys(all)) if (!all[k] || !all[k].date || all[k].date < t) { delete all[k]; changed = true; }
+  if (changed) inkSaveAll(all);
+})();
+const INK_TOOLS = {
+  rojo: { c: '#ff3b30', w: 4 },
+  azul: { c: '#1e7fe0', w: 4 },
+  resaltar: { c: '#ffd60a', w: 20, hl: true },
+};
 // mode: 'chart' (fotos, PDF y acordes) o 'letra' (solo la letra por partes, en grande).
 const LYR_SIZE_KEY = 'listas-letra-tam';
-function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart' }) {
+function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart', date = '' }) {
+  const inkDate = date || today();
   closeChartReader(true);
   const ids = songIds.filter(Boolean);
   if (!ids.length) { toast('Esta lista aún no tiene cantos'); return; }
@@ -1395,8 +1416,17 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
   let lyrSize = 20;
   try { lyrSize = Number(localStorage.getItem(LYR_SIZE_KEY)) || 20; } catch { /* sin almacenamiento */ }
   el.style.setProperty('--lyr', lyrSize + 'px');
-  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div>${mode === 'letra' ? '<button class="cr-size" data-crsize="-2" aria-label="Letra más pequeña">A−</button><button class="cr-size" data-crsize="2" aria-label="Letra más grande">A+</button>' : ''}<span class="cr-key"></span></div>
-    <div class="cr-stage"></div>
+  const chart = mode !== 'letra';
+  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div>${mode === 'letra' ? '<button class="cr-size" data-crsize="-2" aria-label="Letra más pequeña">A−</button><button class="cr-size" data-crsize="2" aria-label="Letra más grande">A+</button>' : '<button class="cr-inkbtn" data-crink aria-label="Marcar y escribir notas">✏️</button>'}<span class="cr-key"></span></div>
+    <div class="cr-stage"><button class="cr-zoomreset" data-crzoom1 hidden>↺ 100%</button></div>
+    ${chart ? `<div class="cr-tools" hidden>
+      ${Object.entries(INK_TOOLS).map(([k, t], n) => `<button type="button" data-tool="${k}" class="${n ? '' : 'on'}" aria-label="${k}"><i style="background:${t.c}${t.hl ? ';opacity:.6;height:10px;border-radius:3px' : ''}"></i></button>`).join('')}
+      <button type="button" data-tool="nota" aria-label="Escribir una nota"><b>T</b></button>
+      <button type="button" data-tool="borrar" aria-label="Borrador">⌫</button>
+      <button type="button" data-inkundo aria-label="Deshacer">↶</button>
+      <button type="button" data-inkclear aria-label="Borrar todas las marcas de este canto">🗑</button>
+      <button type="button" class="done" data-crink aria-label="Terminar de marcar">✓</button>
+    </div>` : ''}
     <div class="cr-nav"><button data-crgo="-1" aria-label="Anterior">‹</button><div class="cr-strip">${ids.map((id, i) => `<button data-crto="${i}">${i + 1}</button>`).join('')}</div><button data-crgo="1" aria-label="Siguiente">›</button></div>`;
   document.body.appendChild(el);
   const stage = el.querySelector('.cr-stage');
@@ -1421,21 +1451,261 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
     songFiles(id).catch(() => []).then((all) => {
       const files = all.filter((f) => !isAudio(f)); // los audios de referencia no son charts
       const s = songById(id) || {};
-      box.innerHTML = '';
+      // .cr-zoom crece con el zoom (el teléfono deja recorrerlo con el dedo); encima van las marcas.
+      box.innerHTML = '<div class="cr-zoom"><div class="cr-content"></div><svg class="cr-ink" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"></svg><div class="cr-notes"></div></div>';
+      const content = box.querySelector('.cr-content');
       for (const f of files) {
         const fb = document.createElement('div');
         fb.className = 'cr-file';
-        box.appendChild(fb);
+        content.appendChild(fb);
         showFile(fb, id, f);
       }
-      if (s.chart) box.insertAdjacentHTML('beforeend', `<pre class="cr-chart">${esc(s.chart)}</pre>`);
+      if (s.chart) content.insertAdjacentHTML('beforeend', `<pre class="cr-chart">${esc(s.chart)}</pre>`);
       if (!files.length && !s.chart) {
         const secs = sectionsOf(s.text);
-        box.innerHTML = `<div class="cr-msg">Este canto no tiene chart todavía. Se muestra la letra.</div>` +
+        content.innerHTML = `<div class="cr-msg">Este canto no tiene chart todavía. Se muestra la letra.</div>` +
           (secs.map((x) => `<div class="cr-sec">${x.name ? secChip(x.name) : ''}<div class="cr-lyr">${esc(x.body)}</div></div>`).join('') || '<div class="cr-msg">Tampoco tiene letra.</div>');
       }
+      box.ink = inkLayer(box, id);
+      if (built.get(cur) === box) syncInkUi();
     });
   }
+
+  // ---- Marcas: cada canto guarda sus trazos y notas en coordenadas del documento (no de la
+  // pantalla), así siguen en su lugar al hacer zoom. ----
+  let inking = false;
+  let tool = 'rojo';
+  function inkLayer(box, songId) {
+    const zoomEl = box.querySelector('.cr-zoom');
+    const svg = box.querySelector('.cr-ink');
+    const notesEl = box.querySelector('.cr-notes');
+    const key = inkDate + '|' + songId;
+    const d = inkAll()[key] || { date: inkDate, strokes: [], notes: [] };
+    let vh = 1000;
+    const save = () => {
+      const all = inkAll();
+      if (d.strokes.length || d.notes.length) all[key] = d; else delete all[key];
+      inkSaveAll(all);
+      syncInkUi();
+    };
+    const pathD = (p) => 'M' + p.reduce((a, v, i) => a + (i % 2 ? ',' : i ? ' L' : '') + v, '');
+    const pathEl = (s) => `<path d="${pathD(s.p)}" stroke="${s.c}" stroke-width="${s.w}" fill="none" stroke-linecap="round" stroke-linejoin="round"${s.hl ? ' stroke-opacity=".42"' : ''}/>`;
+    function draw() {
+      const W = zoomEl.clientWidth || 1;
+      const H = zoomEl.clientHeight || 1;
+      vh = (1000 * H) / W;
+      svg.setAttribute('viewBox', `0 0 1000 ${vh.toFixed(1)}`);
+      svg.innerHTML = d.strokes.map(pathEl).join('');
+      notesEl.innerHTML = d.notes.map((n, i) => `<div class="cr-note" data-note="${i}" style="left:${(n.x / 10).toFixed(2)}%;top:${((n.y / vh) * 100).toFixed(2)}%;--nc:${n.c || '#ff3b30'}">${esc(n.t)}</div>`).join('');
+    }
+    new ResizeObserver(draw).observe(zoomEl);
+    // Punto del documento bajo el dedo (0–1000 a lo ancho; lo alto en la misma escala).
+    const at = (e) => { const r = zoomEl.getBoundingClientRect(); return [Math.round(((e.clientX - r.left) / r.width) * 10000) / 10, Math.round(((e.clientY - r.top) / r.width) * 10000) / 10]; };
+    let live = null;
+    let liveEl = null;
+    function cancel() { if (liveEl) liveEl.remove(); live = null; liveEl = null; }
+    svg.addEventListener('pointerdown', (e) => {
+      if (!inking || pinching) return;
+      e.preventDefault();
+      const [x, y] = at(e);
+      if (tool === 'nota') { addNote(x, y); return; }
+      if (tool === 'borrar') { eraseAt(x, y); live = { erase: true }; svg.setPointerCapture(e.pointerId); return; }
+      const t = INK_TOOLS[tool];
+      live = { c: t.c, w: t.w, hl: !!t.hl, p: [x, y], at: Date.now() };
+      svg.insertAdjacentHTML('beforeend', pathEl(live));
+      liveEl = svg.lastElementChild;
+      svg.setPointerCapture(e.pointerId);
+    });
+    svg.addEventListener('pointermove', (e) => {
+      if (!live || pinching) return;
+      const [x, y] = at(e);
+      if (live.erase) { eraseAt(x, y); return; }
+      const n = live.p.length;
+      if (Math.hypot(x - live.p[n - 2], y - live.p[n - 1]) < 2.5) return;
+      live.p.push(x, y);
+      liveEl.setAttribute('d', pathD(live.p));
+    });
+    const end = () => {
+      if (!live) return;
+      if (!live.erase && live.p.length >= 2) {
+        // Un toque sin mover deja un punto.
+        if (live.p.length === 2) live.p.push(live.p[0] + 0.1, live.p[1]);
+        d.strokes.push(live);
+        save();
+      }
+      live = null; liveEl = null;
+    };
+    svg.addEventListener('pointerup', end);
+    svg.addEventListener('pointercancel', () => { cancel(); });
+    function eraseAt(x, y) {
+      const before = d.strokes.length;
+      for (let i = d.strokes.length - 1; i >= 0; i--) {
+        const s = d.strokes[i];
+        for (let j = 0; j < s.p.length; j += 2) if (Math.hypot(s.p[j] - x, s.p[j + 1] - y) < 14 + s.w / 2) { d.strokes.splice(i, 1); break; }
+      }
+      if (d.strokes.length !== before) { draw(); save(); haptic(4); }
+    }
+    function addNote(x, y, i) {
+      const old = i != null ? d.notes[i] : null;
+      const t = prompt(old ? 'Cambia la nota (déjala vacía para quitarla):' : 'Escribe la nota:', old ? old.t : '');
+      if (t == null) return;
+      if (old) { if (t.trim()) old.t = t.trim().slice(0, 200); else d.notes.splice(i, 1); }
+      else if (t.trim()) d.notes.push({ x, y, t: t.trim().slice(0, 200), c: INK_TOOLS[Object.keys(INK_TOOLS).includes(lastColor) ? lastColor : 'rojo'].c, at: Date.now() });
+      draw(); save();
+    }
+    notesEl.addEventListener('click', (e) => {
+      const n = e.target.closest('[data-note]');
+      if (n && inking) addNote(0, 0, Number(n.dataset.note));
+    });
+    return {
+      draw, cancel,
+      count: () => d.strokes.length + d.notes.length,
+      undo() {
+        const ls = d.strokes[d.strokes.length - 1], ln = d.notes[d.notes.length - 1];
+        if (!ls && !ln) return false;
+        if (ls && (!ln || (ls.at || 0) >= (ln.at || 0))) d.strokes.pop(); else d.notes.pop();
+        draw(); save(); return true;
+      },
+      clear() { d.strokes = []; d.notes = []; draw(); save(); },
+    };
+  }
+  let lastColor = 'rojo';
+  const tools = el.querySelector('.cr-tools');
+  function syncInkUi() {
+    if (!chart) return;
+    const b = built.get(cur);
+    const n = b && b.ink ? b.ink.count() : 0;
+    el.querySelector('.cr-inkbtn').classList.toggle('has', n > 0);
+    el.classList.toggle('inking', inking);
+    tools.hidden = !inking;
+    tools.querySelectorAll('[data-tool]').forEach((x) => x.classList.toggle('on', x.dataset.tool === tool));
+  }
+  function setInking(on) {
+    inking = on;
+    built.forEach((b) => b.ink && b.ink.cancel());
+    syncInkUi();
+    haptic(6);
+    if (on) {
+      let seen = false;
+      try { seen = !!localStorage.getItem('listas-marcas-visto'); localStorage.setItem('listas-marcas-visto', '1'); } catch { /* sin almacenamiento */ }
+      if (!seen) toast('Dibuja con un dedo; con dos haces zoom y te mueves. Las marcas se borran solas cuando pasa la lista.');
+    }
+  }
+
+  // ---- Zoom con dos dedos y doble toque; con zoom se recorre el documento arrastrando ----
+  let pinching = false;
+  const zoomOf = (b) => b.zoom || 1;
+  function setZoom(b, z, cx, cy, px, py) {
+    const zoomEl = b.querySelector('.cr-zoom');
+    if (!zoomEl) return;
+    z = Math.max(1, Math.min(4, z));
+    if (z < 1.04) z = 1;
+    b.zoom = z;
+    zoomEl.style.transform = '';
+    zoomEl.style.setProperty('--z', z);
+    if (b.ink) b.ink.draw();
+    const r = b.getBoundingClientRect();
+    // El punto del documento que estaba bajo los dedos queda bajo los dedos.
+    b.scrollLeft = px * z + zoomEl.offsetLeft - (cx - r.left);
+    b.scrollTop = py * z + zoomEl.offsetTop - (cy - r.top);
+    el.querySelector('[data-crzoom1]').hidden = z === 1;
+    b.classList.toggle('zoomed', z > 1);
+  }
+  function zoomAround(b, z, cx, cy, animate) {
+    const zoomEl = b.querySelector('.cr-zoom');
+    if (!zoomEl) return;
+    const zr = zoomEl.getBoundingClientRect();
+    const z0 = zoomOf(b);
+    const px = (cx - zr.left) / z0, py = (cy - zr.top) / z0;
+    if (animate && !reducedMotion()) {
+      zoomEl.style.transformOrigin = `${cx - zr.left}px ${cy - zr.top}px`;
+      const a = zoomEl.animate([{ transform: 'scale(1)' }, { transform: `scale(${Math.max(1, Math.min(4, z)) / z0})` }], { duration: 260, easing: 'cubic-bezier(.25,.8,.25,1)' });
+      const go = () => setZoom(b, z, cx, cy, px, py);
+      let done = false;
+      const fin = () => { if (!done) { done = true; a.cancel(); go(); } };
+      a.onfinish = fin;
+      setTimeout(fin, 320);
+      return;
+    }
+    setZoom(b, z, cx, cy, px, py);
+  }
+  // Safari: que el gesto de pellizcar no agrande toda la página.
+  for (const ev of ['gesturestart', 'gesturechange']) el.addEventListener(ev, (e) => e.preventDefault());
+
+  let pz = null; // datos del pellizco en curso
+  let lastTap = 0, lastTapX = 0, lastTapY = 0, tapStart = 0, moved = false;
+  let sx = 0, sy = 0, dx = 0, horiz = null;
+  const mid = (t) => [(t[0].clientX + t[1].clientX) / 2, (t[0].clientY + t[1].clientY) / 2];
+  const dist = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  stage.addEventListener('touchstart', (e) => {
+    const b = built.get(cur);
+    if (e.touches.length === 2 && chart && b && b.querySelector('.cr-zoom')) {
+      // Dos dedos: zoom y movimiento (también mientras se marca).
+      if (b.ink) b.ink.cancel();
+      pinching = true;
+      horiz = false;
+      const zoomEl = b.querySelector('.cr-zoom');
+      const zr = zoomEl.getBoundingClientRect();
+      const [cx, cy] = mid(e.touches);
+      pz = { b, zoomEl, z0: zoomOf(b), d0: dist(e.touches), cx0: cx, cy0: cy, cx, cy, s: 1, ox: cx - zr.left, oy: cy - zr.top };
+      zoomEl.style.transformOrigin = `${pz.ox}px ${pz.oy}px`;
+      return;
+    }
+    if (e.touches.length !== 1) { horiz = false; return; }
+    sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; horiz = null; moved = false; tapStart = Date.now();
+  }, { passive: true });
+  stage.addEventListener('touchmove', (e) => {
+    if (pz && e.touches.length === 2) {
+      e.preventDefault();
+      const [cx, cy] = mid(e.touches);
+      const z = Math.max(0.85, Math.min(4.5, (pz.z0 * dist(e.touches)) / pz.d0));
+      pz.s = z / pz.z0; pz.cx = cx; pz.cy = cy;
+      pz.zoomEl.style.transform = `translate(${cx - pz.cx0}px, ${cy - pz.cy0}px) scale(${pz.s})`;
+      return;
+    }
+    if (pinching || e.touches.length !== 1) return;
+    dx = e.touches[0].clientX - sx;
+    const dy = e.touches[0].clientY - sy;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) moved = true;
+    // Con zoom o marcando, deslizar recorre/dibuja: no cambia de canto.
+    const b = built.get(cur);
+    if (inking || (b && zoomOf(b) > 1)) { horiz = false; return; }
+    if (horiz === null && (Math.abs(dx) > 12 || Math.abs(dy) > 12)) horiz = Math.abs(dx) > Math.abs(dy) * 1.4;
+    if (horiz) { e.preventDefault(); if (b) { b.style.transition = 'none'; b.style.transform = `translateX(${dx * 0.6}px)`; } }
+  }, { passive: false });
+  stage.addEventListener('touchend', (e) => {
+    if (pz) {
+      if (e.touches.length < 2) {
+        const { b, z0, s, cx, cy, ox, oy } = pz;
+        pz = null;
+        setZoom(b, z0 * s, cx, cy, ox / z0, oy / z0);
+        // Deja el dedo que queda sin efecto hasta levantarlo.
+        setTimeout(() => { pinching = false; }, 60);
+      }
+      return;
+    }
+    if (pinching) return;
+    const b = built.get(cur);
+    if (b) { b.style.transition = ''; b.style.transform = ''; }
+    if (horiz && Math.abs(dx) > 60) { const j = cur + (dx < 0 ? 1 : -1); if (j >= 0 && j < ids.length) { show(j, dx < 0 ? 1 : -1); haptic(6); } }
+    horiz = null;
+    // Doble toque: acerca donde tocaste (o vuelve al tamaño normal).
+    const t = e.changedTouches[0];
+    if (chart && !inking && !moved && Date.now() - tapStart < 260 && b) {
+      if (Date.now() - lastTap < 320 && Math.hypot(t.clientX - lastTapX, t.clientY - lastTapY) < 30) {
+        lastTap = 0;
+        zoomAround(b, zoomOf(b) > 1 ? 1 : 2.5, t.clientX, t.clientY, true);
+        haptic(5);
+      } else { lastTap = Date.now(); lastTapX = t.clientX; lastTapY = t.clientY; }
+    }
+  });
+  // Con el ratón (o trackpad): Ctrl + rueda hace zoom.
+  stage.addEventListener('wheel', (e) => {
+    const b = built.get(cur);
+    if (!chart || !e.ctrlKey || !b) return;
+    e.preventDefault();
+    zoomAround(b, zoomOf(b) * (e.deltaY < 0 ? 1.15 : 1 / 1.15), e.clientX, e.clientY, false);
+  }, { passive: false });
   function show(i, dir = 0) {
     if (i < 0 || i >= ids.length || i === cur) return;
     build(i); build(i + 1); build(i - 1);
@@ -1458,9 +1728,18 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
     if (chip) chip.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
     el.querySelector('[data-crgo="-1"]').disabled = i === 0;
     el.querySelector('[data-crgo="1"]').disabled = i === ids.length - 1;
+    el.querySelector('[data-crzoom1]').hidden = !next.zoom || next.zoom === 1;
+    if (chart) built.forEach((b) => b.ink && b.ink.cancel());
+    syncInkUi();
   }
   el.addEventListener('click', (e) => {
     if (e.target.closest('[data-crback]')) { closeChartReader(); return; }
+    if (e.target.closest('[data-crink]')) { setInking(!inking); return; }
+    if (e.target.closest('[data-crzoom1]')) { const b = built.get(cur); if (b) { const r = stage.getBoundingClientRect(); zoomAround(b, 1, r.left + r.width / 2, r.top + r.height / 2, true); } return; }
+    const tl = e.target.closest('[data-tool]');
+    if (tl) { tool = tl.dataset.tool; if (INK_TOOLS[tool]) lastColor = tool; syncInkUi(); haptic(4); if (tool === 'nota') toast('Toca donde quieres poner la nota'); return; }
+    if (e.target.closest('[data-inkundo]')) { const b = built.get(cur); if (!(b && b.ink && b.ink.undo())) toast('No hay nada que deshacer'); haptic(4); return; }
+    if (e.target.closest('[data-inkclear]')) { const b = built.get(cur); if (b && b.ink && b.ink.count() && confirm('¿Borrar todas las marcas y notas de este canto?')) b.ink.clear(); return; }
     const sz = e.target.closest('[data-crsize]');
     if (sz) {
       lyrSize = Math.max(14, Math.min(40, lyrSize + Number(sz.dataset.crsize)));
@@ -1473,22 +1752,6 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
     if (g) { show(cur + Number(g.dataset.crgo), Number(g.dataset.crgo)); haptic(6); return; }
     const t = e.target.closest('[data-crto]');
     if (t) { const j = Number(t.dataset.crto); show(j, j > cur ? 1 : -1); haptic(6); }
-  });
-  // Deslizar a los lados para cambiar de canto (arriba/abajo sigue bajando por la partitura).
-  let sx = 0, sy = 0, dx = 0, horiz = null;
-  stage.addEventListener('touchstart', (e) => { if (e.touches.length !== 1) { horiz = false; return; } sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; horiz = null; }, { passive: true });
-  stage.addEventListener('touchmove', (e) => {
-    if (horiz === false || e.touches.length !== 1) { horiz = false; return; }
-    dx = e.touches[0].clientX - sx;
-    const dy = e.touches[0].clientY - sy;
-    if (horiz === null && (Math.abs(dx) > 12 || Math.abs(dy) > 12)) horiz = Math.abs(dx) > Math.abs(dy) * 1.4;
-    if (horiz) { e.preventDefault(); const b = built.get(cur); if (b) { b.style.transition = 'none'; b.style.transform = `translateX(${dx * 0.6}px)`; } }
-  }, { passive: false });
-  stage.addEventListener('touchend', () => {
-    const b = built.get(cur);
-    if (b) { b.style.transition = ''; b.style.transform = ''; }
-    if (horiz && Math.abs(dx) > 60) { const j = cur + (dx < 0 ? 1 : -1); if (j >= 0 && j < ids.length) { show(j, dx < 0 ? 1 : -1); haptic(6); } }
-    horiz = null;
   });
   // Pantalla completa (Android); en el iPhone instalada ya ocupa toda la pantalla.
   try { if (document.documentElement.requestFullscreen && !document.fullscreenElement) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); } catch { /* sin pantalla completa */ }
@@ -1884,7 +2147,7 @@ function viewService(date, selId) {
     const keys = Object.fromEntries(items.map((it) => [it.songId, val(it, 'key')]));
     const start = Math.max(0, items.findIndex((it) => it.id === sel));
     setTimeout(() => openChartReader({
-      songIds: items.map((it) => it.songId), start, keys, mode: b.dataset.vm,
+      songIds: items.map((it) => it.songId), start, keys, mode: b.dataset.vm, date,
       onClose: () => { if ($('svView')) $('svView').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.vm === 'lista')); },
     }), 120);
   };
