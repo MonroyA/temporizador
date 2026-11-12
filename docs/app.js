@@ -2914,7 +2914,25 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
 // Arranque
 // ======================================================================================
 (async function start() {
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  // Actualización automática: al volver a la app (o cada 30 min) se busca una versión nueva; si
+  // la hay, la app se recarga sola con ella (sin tener que cerrarla).
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+      const check = () => reg.update().catch(() => {});
+      document.addEventListener('visibilitychange', () => { if (!document.hidden) check(); });
+      setInterval(check, 30 * 60 * 1000);
+    }).catch(() => {});
+    let hadCtrl = !!navigator.serviceWorker.controller;
+    let reloading = false;
+    const reloadNow = () => { if (reloading) return; reloading = true; location.reload(); };
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadCtrl) { hadCtrl = true; return; } // primera instalación: no hace falta
+      // Si estás escribiendo algo, espera a que salgas de la app para no perderlo.
+      const busy = document.activeElement && /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName) && document.activeElement.value;
+      if (!busy) reloadNow();
+      else document.addEventListener('visibilitychange', () => { if (document.hidden) reloadNow(); });
+    });
+  }
   try { api = DEMO ? demoBackend() : await firebaseBackend(); } catch (e) {
     $('view').innerHTML = `<div class="empty" style="padding-top:40vh">No se pudo conectar con la nube.<br>Revisa tu internet.<br><br><button class="btn" onclick="location.reload()">Reintentar</button></div>`;
     return;
