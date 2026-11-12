@@ -1,7 +1,7 @@
 // Service worker: la app abre al instante (y sin conexión muestra la última versión guardada).
 // Las listas se leen siempre de la nube; esto solo guarda los archivos de la app.
-const CACHE = 'listas-v9';
-const FILES = ['./', './index.html', './app.js', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
+const CACHE = 'listas-v10';
+const FILES = ['./', './index.html', './app.js', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './medios-sol.png', './medios-aguila.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
