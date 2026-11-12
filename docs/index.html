@@ -161,6 +161,8 @@
   .keyline { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
   .comment { padding: 9px 0; border-bottom: 1px solid var(--line); }
   .comment:last-child { border-bottom: 0; }
+  .comment { transition: opacity .2s, transform .2s; }
+  .comment.leaving { opacity: .25; transform: translateX(30px); }
   .comment b { color: var(--title); font-size: 13px; }
   .comment small { color: var(--faint); font-size: 11px; }
   .comment p { margin: 2px 0 0; }
