@@ -399,13 +399,22 @@ addEventListener('hashchange', () => { trackNav(); route(); });
 
 // Cabecera: «‹» vuelve a la pantalla anterior (siempre a una pantalla concreta, no al historial
 // del navegador). La navegación está en la barra de abajo.
-function hero({ title = '', back = '', tall = false } = {}) {
-  const chip = resumeChip();
-  return `<div class="hero${tall ? ' tall' : ''}"><div class="hero-logo" aria-hidden="true"><div class="hl-art"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></div></div><div class="tools">` +
+// compact (dentro de una lista): la tarjeta sube y tapa el fondo; «ALABANZA» y el logo se van y
+// la fecha sube a su lugar. Al salir, la cabecera baja de nuevo con su fondo y logo.
+let heroWasCompact = false;
+function hero({ title = '', back = '', tall = false, compact = false } = {}) {
+  const chip = compact ? '' : resumeChip();
+  const grow = !compact && heroWasCompact; // venimos de una lista: la cabecera baja
+  const shrink = compact && !heroWasCompact; // entramos a una lista: la cabecera sube
+  heroWasCompact = compact;
+  const cls = 'hero' + (tall ? ' tall' : '') + (compact ? ' compact' : '') + (shrink ? ' shrink' : '') + (grow ? ' grow' : '');
+  return `<div class="${cls}"><div class="hero-logo" aria-hidden="true"><div class="hl-art"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></div></div><div class="tools">` +
     (chip || (back ? `<button class="round" data-go="${back}" aria-label="Atrás">‹</button>` : '<span class="round ghost"></span>')) +
-    `<span class="brand-col"><button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio">${brandWord()}</button>${!navigator.onLine && (location.hash.replace(/^#/, '') || '/') === '/' ? '<span class="off-tag">📴 OFFLINE</span>' : ''}</span>` +
+    (compact
+      ? `<span class="brand-col"><span class="ctitle">${esc(title)}</span></span>`
+      : `<span class="brand-col"><button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio">${brandWord()}</button>${!navigator.onLine && (location.hash.replace(/^#/, '') || '/') === '/' ? '<span class="off-tag">📴 OFFLINE</span>' : ''}</span>`) +
     (user && me && isMember() ? `<button class="round bell${unread() ? ' has' : ''}" data-go="#/avisos" aria-label="Avisos">${bellInner()}</button>` : '<span class="round ghost"></span>') + '</div>' +
-    (title ? `<h1>${esc(title)}</h1>` : '') + '</div>';
+    (title && !compact ? `<h1>${esc(title)}</h1>` : '') + '</div>';
 }
 
 // ---- Avisos: cuando envían una lista, comentan tu lista, sugieren un canto o alguien pide entrar ----
@@ -1196,7 +1205,7 @@ function viewPicker(date) {
   let items = [];
   let q = '';
   const s = () => services.find((x) => x.date === date) || { date };
-  $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/s/' + date })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 90px)">
+  $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/s/' + date, compact: true })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 90px)">
     ${stepsBar(2)}
     <div class="hello">Paso 2 de 3</div>
     <h2 class="big">Elige los cantos</h2>
@@ -1917,7 +1926,7 @@ function viewService(date, selId) {
 
   // Arriba: «Lista» (los cantos en cascada; al tocar uno se despliega todo lo suyo), «Chart» y
   // «Letra» (los dos últimos, a pantalla completa con los cantos en orden).
-  $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/' })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 40px)">
+  $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/', compact: true })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 40px)">
     <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
     <div class="tabs view-sel" id="svView"><button data-vm="lista" class="on">☰ Lista</button><button data-vm="chart">🎼 Chart</button><button data-vm="letra">Aa Letra</button></div>
     <div id="svOffline"></div>
