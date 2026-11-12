@@ -7,7 +7,9 @@ import { FIREBASE_CONFIG } from './config.js';
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid8 = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-const DEMO = !FIREBASE_CONFIG.apiKey;
+// Demostración: sin Firebase configurado, o con «?demo» abriendo la app en esta misma computadora
+// (para probar cambios sin tocar la nube).
+const DEMO = !FIREBASE_CONFIG.apiKey || (new URLSearchParams(location.search).has('demo') && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
 
 function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2600); }
 
@@ -169,6 +171,7 @@ function demoBackend() {
     async updateItem(date, id, patch) { db.items[date][id] = { ...db.items[date][id], ...patch }; touch(date); save(); },
     async deleteItem(date, id) { delete db.items[date][id]; touch(date); save(); },
     watchNotifications(cb) { return watch(() => cb(list(db.notifs).sort((a, b) => b.at - a.at).slice(0, 60))); },
+    async refresh() { await pullTempo(); emit(); },
     async addNotification(n) { db.notifs[uid8()] = { ...n, at: Date.now() }; save(); },
     watchComments(date, item, cb) { return watch(() => cb(list(db.comments[`${date}/${item}`]).sort((a, b) => a.at - b.at))); },
     async addComment(date, item, c) { const k = `${date}/${item}`; db.comments[k] = { ...(db.comments[k] || {}), [uid8()]: { ...c, at: Date.now() } }; save(); },
@@ -193,6 +196,7 @@ function demoBackend() {
     },
     async deleteSong(id) { delete db.songs[id]; delete db.files[id]; save(); },
     watchFiles(song, cb) { return watch(() => cb(list(db.files[song]).map(({ data, ...meta }) => meta))); },
+    async listFiles(song) { return list(db.files[song]).map(({ data, ...meta }) => meta); },
     async addFile(song, meta, base64) {
       if (base64.length > 1.5e6) throw new Error('En la demostración los archivos deben pesar menos de 1 MB');
       db.files[song] = { ...(db.files[song] || {}), [uid8()]: { ...meta, data: base64, at: Date.now() } }; save();
@@ -211,12 +215,16 @@ async function firebaseBackend() {
   ]);
   const app = initializeApp(FIREBASE_CONFIG);
   const auth = A.getAuth(app);
-  const db = F.getFirestore(app);
+  // Copia local en el teléfono: al abrir, las listas y cantos salen al instante desde ella y
+  // luego se ponen al día con la nube (y funciona sin señal).
+  let db;
+  try { db = F.initializeFirestore(app, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) }); } catch { db = F.getFirestore(app); }
   const D = (...p) => F.doc(db, ...p);
   const C = (...p) => F.collection(db, ...p);
   const snapList = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const CHUNK = 700000; // los archivos se guardan en trozos (Firestore admite 1 MB por documento)
-  const touch = (date) => F.updateDoc(D('services', date), { changedAt: Date.now() }).catch(() => {});
+  // srvAt (hora del servidor): las computadoras con el Temporizador bajan solo las listas que cambiaron.
+  const touch = (date) => F.updateDoc(D('services', date), { changedAt: Date.now(), srvAt: F.serverTimestamp() }).catch(() => {});
   return {
     demo: false,
     onAuth(cb) { A.onAuthStateChanged(auth, (u) => cb(u ? { uid: u.uid, email: u.email } : null)); },
@@ -241,8 +249,8 @@ async function firebaseBackend() {
     async createUser(email, pass, data) {
       const sec = initializeApp(FIREBASE_CONFIG, 'alta-' + Date.now());
       try {
-        const sa = A.getAuth(sec);
-        await A.setPersistence(sa, A.inMemoryPersistence);
+        // Sesión solo en memoria, sin preparar el almacenamiento del navegador (más rápido).
+        const sa = A.initializeAuth(sec, { persistence: A.inMemoryPersistence });
         const cred = await A.createUserWithEmailAndPassword(sa, email, pass);
         await F.setDoc(D('members', cred.user.uid), { ...data, email });
         await A.signOut(sa);
@@ -257,7 +265,7 @@ async function firebaseBackend() {
       const since = keyOf(new Date(Date.now() - 14 * 864e5));
       return F.onSnapshot(F.query(C('services'), F.where('date', '>=', since), F.orderBy('date')), (s) => cb(snapList(s)));
     },
-    saveService: (date, data) => F.setDoc(D('services', date), { ...data, date, updatedAt: Date.now() }, { merge: true }),
+    saveService: (date, data) => F.setDoc(D('services', date), { ...data, date, updatedAt: Date.now(), srvAt: F.serverTimestamp() }, { merge: true }),
     async deleteService(date) {
       const items = await F.getDocs(C('services', date, 'items'));
       await Promise.all(items.docs.map((d) => F.deleteDoc(d.ref)));
@@ -267,16 +275,26 @@ async function firebaseBackend() {
     addItem: async (date, item) => { const r = await F.addDoc(C('services', date, 'items'), { ...item, at: Date.now() }); touch(date); return r.id; },
     updateItem: async (date, id, patch) => { await F.updateDoc(D('services', date, 'items', id), patch); touch(date); },
     deleteItem: async (date, id) => { await F.deleteDoc(D('services', date, 'items', id)); touch(date); },
+    // Deslizar para actualizar: se reconecta con la nube para traer lo último. Lo que se guardó
+    // sin señal se envía primero (no se pierde nada).
+    async refresh() {
+      await Promise.race([F.waitForPendingWrites(db), wait(4000)]);
+      await F.disableNetwork(db);
+      await F.enableNetwork(db);
+    },
     watchNotifications: (cb) => F.onSnapshot(F.query(C('notifications'), F.orderBy('at', 'desc'), F.limit(60)), (s) => cb(snapList(s)), () => cb([])),
     addNotification: (n) => F.addDoc(C('notifications'), { ...n, at: Date.now() }),
     watchComments: (date, item, cb) => F.onSnapshot(F.query(C('services', date, 'items', item, 'comments'), F.orderBy('at')), (s) => cb(snapList(s))),
     addComment: (date, item, c) => F.addDoc(C('services', date, 'items', item, 'comments'), { ...c, at: Date.now() }),
     deleteComment: (date, item, id) => F.deleteDoc(D('services', date, 'items', item, 'comments', id)),
-    watchSongs: (cb) => F.onSnapshot(F.query(C('songs'), F.orderBy('title')), (s) => cb(snapList(s))),
-    addSong: async (song) => (await F.addDoc(C('songs'), { ...song, at: Date.now() })).id,
-    updateSong: (id, patch) => F.updateDoc(D('songs', id), patch),
-    deleteSong: (id) => F.deleteDoc(D('songs', id)),
+    // srvAt (hora del servidor) le dice al Temporizador qué cantos cambiaron. Un canto borrado
+    // queda como «borrado» para que también se borre en todas las computadoras.
+    watchSongs: (cb) => F.onSnapshot(F.query(C('songs'), F.orderBy('title')), (s) => cb(snapList(s).filter((x) => x.status !== 'borrado'))),
+    addSong: async (song) => (await F.addDoc(C('songs'), { ...song, at: Date.now(), updatedAt: Date.now(), srvAt: F.serverTimestamp() })).id,
+    updateSong: (id, patch) => F.updateDoc(D('songs', id), { ...patch, updatedAt: Date.now(), srvAt: F.serverTimestamp() }),
+    deleteSong: (id) => F.updateDoc(D('songs', id), { status: 'borrado', updatedAt: Date.now(), srvAt: F.serverTimestamp() }),
     watchFiles: (song, cb) => F.onSnapshot(C('songs', song, 'files'), (s) => cb(snapList(s))),
+    listFiles: async (song) => snapList(await F.getDocs(C('songs', song, 'files'))),
     async addFile(song, meta, base64) {
       const ref = await F.addDoc(C('songs', song, 'files'), { ...meta, chunks: Math.ceil(base64.length / CHUNK), at: Date.now() });
       for (let i = 0, n = 0; i < base64.length; i += CHUNK, n++) await F.setDoc(D('songs', song, 'files', ref.id, 'chunks', String(n)), { data: base64.slice(i, i + CHUNK) });
@@ -494,6 +512,7 @@ applyTheme();
 function route() {
   clearView();
   closeSheet();
+  closeChartReader(true);
   $('view').onclick = null;
   $('view').onchange = null;
   $('view').onkeydown = null;
@@ -715,6 +734,64 @@ function animateView() {
   });
 }());
 
+// ---- Gesto: deslizar hacia abajo (arriba de todo) para actualizar ----
+// Pide a la nube lo último de todo (listas, cantos, avisos) y busca si hay versión nueva de la app.
+// No vuelve a dibujar la pantalla: lo que estés escribiendo (notas, comentarios, un canto) se queda.
+(function pullToRefresh() {
+  const ind = document.createElement('div');
+  ind.className = 'ptr';
+  ind.innerHTML = '<i>↓</i>';
+  document.body.appendChild(ind);
+  let sy = 0, sx = 0, dy = 0, on = false, pulling = false, busyRefresh = false;
+  const LIMIT = 70;
+  addEventListener('touchstart', (e) => {
+    if (busyRefresh || e.touches.length !== 1 || scrollY > 2 || $('sheetBg').classList.contains('open')) return;
+    if (e.target.closest('input, textarea, select, .hscroll, .tabbar, .keys, iframe, .video')) return;
+    sy = e.touches[0].clientY; sx = e.touches[0].clientX; dy = 0; on = true; pulling = false;
+  }, { passive: true });
+  addEventListener('touchmove', (e) => {
+    if (!on) return;
+    const t = e.touches[0];
+    dy = t.clientY - sy;
+    if (!pulling) {
+      if (dy < 6 || Math.abs(t.clientX - sx) > Math.abs(dy)) { if (dy < 0 || Math.abs(t.clientX - sx) > 12) on = false; return; }
+      if (scrollY > 2) { on = false; return; }
+      pulling = true;
+    }
+    e.preventDefault();
+    const d = Math.min(110, dy * 0.5);
+    ind.style.transition = 'none';
+    ind.style.opacity = String(Math.min(1, d / 40));
+    ind.style.transform = `translate(-50%, ${d}px) rotate(${Math.min(180, (d / LIMIT) * 180)}deg)`;
+    ind.classList.toggle('ready', d >= LIMIT);
+  }, { passive: false });
+  addEventListener('touchend', async () => {
+    if (!on) return;
+    on = false;
+    if (!pulling) return;
+    const go = Math.min(110, dy * 0.5) >= LIMIT;
+    ind.style.transition = '';
+    if (!go) { ind.style.opacity = '0'; ind.style.transform = 'translate(-50%, 0)'; ind.classList.remove('ready'); return; }
+    busyRefresh = true;
+    haptic(12);
+    ind.classList.add('spin');
+    ind.style.transform = 'translate(-50%, 56px)';
+    const t0 = Date.now();
+    try {
+      await Promise.all([
+        api && api.refresh ? api.refresh() : null,
+        navigator.serviceWorker && navigator.serviceWorker.getRegistration().then((r) => r && r.update()).catch(() => {}),
+      ]);
+      await wait(Math.max(0, 600 - (Date.now() - t0))); // que se alcance a ver que actualizó
+      toast('✓ Actualizado');
+    } catch { toast('Sin conexión: se muestra lo último guardado'); }
+    ind.classList.remove('spin', 'ready');
+    ind.style.opacity = '0';
+    ind.style.transform = 'translate(-50%, 0)';
+    busyRefresh = false;
+  });
+}());
+
 // ---- Celebración: palomita que se dibuja y confeti (al enviar una lista o crear un usuario) ----
 function celebrate(text) {
   haptic([12, 40, 18]);
@@ -737,7 +814,7 @@ const splashT0 = Date.now();
 function hideSplash() {
   const sp = $('splash');
   if (!sp || sp.classList.contains('out')) return;
-  const left = Math.max(0, 1300 - (Date.now() - splashT0));
+  const left = Math.max(0, 600 - (Date.now() - splashT0));
   setTimeout(() => { sp.classList.add('out'); setTimeout(() => sp.remove(), 700); }, left);
 }
 setTimeout(hideSplash, 7000); // por si la red tarda: no se queda la bienvenida para siempre
@@ -1021,6 +1098,224 @@ function viewPicker(date) {
 }
 
 // ======================================================================================
+// Charts: los archivos (fotos y PDF) se guardan en el teléfono la primera vez que se abren o se
+// precargan, así después abren al instante (y sin señal). Un archivo nunca cambia (si se sube
+// otro, tiene otro id), por eso la copia guardada siempre sirve.
+// ======================================================================================
+const FILE_CACHE = 'listas-archivos';
+const fileMem = new Map(); // id de archivo -> Promise<{ url, type, blob }>
+const filesOf = new Map(); // id de canto -> Promise<[datos de sus archivos]>
+const b64ToBlob = async (b64, type) => (await fetch(`data:${type};base64,${b64}`)).blob();
+function songFiles(songId) {
+  if (filesOf.has(songId)) return filesOf.get(songId);
+  const p = Promise.resolve(api.listFiles(songId)).then((l) => (l || []).sort((a, b) => (a.at || 0) - (b.at || 0)));
+  filesOf.set(songId, p);
+  p.catch(() => filesOf.delete(songId));
+  return p;
+}
+function fileData(songId, f) {
+  if (fileMem.has(f.id)) return fileMem.get(f.id);
+  const p = (async () => {
+    const key = new URL(`__archivo/${songId}/${f.id}`, location.href).href;
+    let blob = null, cache = null;
+    try { cache = await caches.open(FILE_CACHE); const hit = await cache.match(key); if (hit) blob = await hit.blob(); } catch { cache = null; }
+    if (!blob) {
+      blob = await b64ToBlob(await api.getFile(songId, f.id), f.type);
+      if (cache) cache.put(key, new Response(blob, { headers: { 'Content-Type': f.type } })).catch(() => {});
+    }
+    return { url: URL.createObjectURL(blob), type: f.type, blob };
+  })();
+  fileMem.set(f.id, p);
+  p.catch(() => fileMem.delete(f.id));
+  return p;
+}
+// Precarga de uno en uno, en segundo plano, sin frenar la app (no se hace con «ahorro de datos»).
+let prefetchQ = Promise.resolve();
+const prefetched = new Set();
+function prefetchSongs(ids) {
+  if (navigator.connection && navigator.connection.saveData) return;
+  for (const id of ids) {
+    if (!id || prefetched.has(id)) continue;
+    prefetched.add(id);
+    prefetchQ = prefetchQ.then(async () => {
+      const files = await songFiles(id).catch(() => []);
+      for (const f of files) await fileData(id, f).catch(() => {});
+      if (files.some((f) => f.type === 'application/pdf')) loadPdfJs().catch(() => {});
+    });
+  }
+}
+// Al abrir la app: los charts de la próxima lista quedan listos sin que nadie los abra.
+let upcomingDone = false;
+function prefetchUpcoming() {
+  if (upcomingDone || !api) return;
+  const next = services.filter((s) => s.date >= today()).sort((a, b) => a.date.localeCompare(b.date))[0];
+  if (!next) return;
+  upcomingDone = true;
+  let off = null, done = false;
+  off = api.watchItems(next.date, (list) => {
+    if (done) return;
+    done = true;
+    prefetchSongs(list.map((it) => it.songId));
+    setTimeout(() => { if (off) off(); }, 0);
+  });
+  if (done && off) off();
+}
+
+// ---- PDF: se dibuja dentro de la app con pdf.js (se carga solo la primera vez que hace falta) ----
+const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168';
+let pdfjsP = null;
+function loadPdfJs() {
+  if (!pdfjsP) {
+    pdfjsP = (async () => {
+      const m = await import(`${PDFJS}/pdf.min.mjs`);
+      // El «trabajador» se crea desde una copia local para que funcione desde esta dirección.
+      const src = await (await fetch(`${PDFJS}/pdf.worker.min.mjs`)).text();
+      m.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      return m;
+    })();
+    pdfjsP.catch(() => { pdfjsP = null; });
+  }
+  return pdfjsP;
+}
+async function renderPdf(box, blob) {
+  const lib = await loadPdfJs();
+  const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+  const w = box.clientWidth || innerWidth;
+  const dpr = Math.min(2, devicePixelRatio || 1);
+  for (let n = 1; n <= doc.numPages; n++) {
+    const page = await doc.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: (w * dpr) / base.width });
+    const cv = document.createElement('canvas');
+    cv.width = Math.round(vp.width);
+    cv.height = Math.round(vp.height);
+    cv.className = 'cr-page';
+    box.appendChild(cv);
+    await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+  }
+}
+
+// ---- Lector «Solo chart»: pantalla completa, un canto tras otro ----
+// Cada canto se arma una sola vez y se queda listo (oculto) al cambiar: así pasar de uno a otro
+// es instantáneo. Se preparan también el anterior y el siguiente. Deslizar ← → o tocar los
+// números de abajo cambia de canto; «‹ Lista» vuelve.
+let reader = null;
+function openChartReader({ songIds, start = 0, keys = {}, onClose }) {
+  closeChartReader(true);
+  const ids = songIds.filter(Boolean);
+  if (!ids.length) { toast('Esta lista aún no tiene cantos'); return; }
+  const el = document.createElement('div');
+  el.className = 'cr';
+  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div><span class="cr-key"></span></div>
+    <div class="cr-stage"></div>
+    <div class="cr-nav"><button data-crgo="-1" aria-label="Anterior">‹</button><div class="cr-strip">${ids.map((id, i) => `<button data-crto="${i}">${i + 1}</button>`).join('')}</div><button data-crgo="1" aria-label="Siguiente">›</button></div>`;
+  document.body.appendChild(el);
+  const stage = el.querySelector('.cr-stage');
+  const built = new Map();
+  let cur = -1;
+  function build(i) {
+    if (built.has(i) || i < 0 || i >= ids.length) return;
+    const id = ids[i];
+    const box = document.createElement('div');
+    box.className = 'cr-song';
+    box.innerHTML = '<div class="cr-loading"><i></i></div>';
+    stage.appendChild(box);
+    built.set(i, box);
+    songFiles(id).catch(() => []).then((files) => {
+      const s = songById(id) || {};
+      box.innerHTML = '';
+      for (const f of files) {
+        const fb = document.createElement('div');
+        fb.className = 'cr-file';
+        fb.innerHTML = '<div class="cr-loading"><i></i></div>';
+        box.appendChild(fb);
+        fileData(id, f).then(async (d) => {
+          if (d.type === 'application/pdf') { await renderPdf(fb, d.blob); fb.querySelector('.cr-loading')?.remove(); return; }
+          const img = new Image();
+          img.className = 'cr-page';
+          img.decoding = 'async';
+          img.alt = f.name || 'Chart';
+          img.onload = () => fb.querySelector('.cr-loading')?.remove();
+          img.src = d.url;
+          fb.appendChild(img);
+        }).catch(() => { fb.innerHTML = '<div class="cr-msg">No se pudo abrir este archivo. Revisa la conexión y vuelve a intentar.</div>'; });
+      }
+      if (s.chart) box.insertAdjacentHTML('beforeend', `<pre class="cr-chart">${esc(s.chart)}</pre>`);
+      if (!files.length && !s.chart) {
+        const secs = sectionsOf(s.text);
+        box.innerHTML = `<div class="cr-msg">Este canto no tiene chart todavía. Se muestra la letra.</div>` +
+          (secs.map((x) => `<div class="cr-sec">${x.name ? secChip(x.name) : ''}<div class="cr-lyr">${esc(x.body)}</div></div>`).join('') || '<div class="cr-msg">Tampoco tiene letra.</div>');
+      }
+    });
+  }
+  function show(i, dir = 0) {
+    if (i < 0 || i >= ids.length || i === cur) return;
+    build(i); build(i + 1); build(i - 1);
+    const prev = built.get(cur);
+    const next = built.get(i);
+    if (prev) { prev.classList.remove('on', 'in-l', 'in-r'); }
+    next.classList.remove('in-l', 'in-r');
+    void next.offsetWidth;
+    next.classList.add('on');
+    if (dir && !reducedMotion()) next.classList.add(dir > 0 ? 'in-r' : 'in-l');
+    cur = i;
+    const s = songById(ids[i]) || {};
+    el.querySelector('.cr-title b').textContent = s.title || 'Canto';
+    el.querySelector('.cr-title small').textContent = `${i + 1} de ${ids.length}${s.author ? ' · ' + s.author : ''}`;
+    const k = keys[ids[i]] || s.key || '';
+    el.querySelector('.cr-key').textContent = k;
+    el.querySelector('.cr-key').hidden = !k;
+    el.querySelectorAll('[data-crto]').forEach((b) => b.classList.toggle('on', Number(b.dataset.crto) === i));
+    const chip = el.querySelector(`[data-crto="${i}"]`);
+    if (chip) chip.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    el.querySelector('[data-crgo="-1"]').disabled = i === 0;
+    el.querySelector('[data-crgo="1"]').disabled = i === ids.length - 1;
+  }
+  el.addEventListener('click', (e) => {
+    if (e.target.closest('[data-crback]')) { closeChartReader(); return; }
+    const g = e.target.closest('[data-crgo]');
+    if (g) { show(cur + Number(g.dataset.crgo), Number(g.dataset.crgo)); haptic(6); return; }
+    const t = e.target.closest('[data-crto]');
+    if (t) { const j = Number(t.dataset.crto); show(j, j > cur ? 1 : -1); haptic(6); }
+  });
+  // Deslizar a los lados para cambiar de canto (arriba/abajo sigue bajando por la partitura).
+  let sx = 0, sy = 0, dx = 0, horiz = null;
+  stage.addEventListener('touchstart', (e) => { if (e.touches.length !== 1) { horiz = false; return; } sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; horiz = null; }, { passive: true });
+  stage.addEventListener('touchmove', (e) => {
+    if (horiz === false || e.touches.length !== 1) { horiz = false; return; }
+    dx = e.touches[0].clientX - sx;
+    const dy = e.touches[0].clientY - sy;
+    if (horiz === null && (Math.abs(dx) > 12 || Math.abs(dy) > 12)) horiz = Math.abs(dx) > Math.abs(dy) * 1.4;
+    if (horiz) { e.preventDefault(); const b = built.get(cur); if (b) { b.style.transition = 'none'; b.style.transform = `translateX(${dx * 0.6}px)`; } }
+  }, { passive: false });
+  stage.addEventListener('touchend', () => {
+    const b = built.get(cur);
+    if (b) { b.style.transition = ''; b.style.transform = ''; }
+    if (horiz && Math.abs(dx) > 60) { const j = cur + (dx < 0 ? 1 : -1); if (j >= 0 && j < ids.length) { show(j, dx < 0 ? 1 : -1); haptic(6); } }
+    horiz = null;
+  });
+  // Pantalla completa (Android); en el iPhone instalada ya ocupa toda la pantalla.
+  try { if (document.documentElement.requestFullscreen && !document.fullscreenElement) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); } catch { /* sin pantalla completa */ }
+  // El botón «atrás» del teléfono cierra el lector (no sale de la lista).
+  history.pushState({ chart: true }, '');
+  reader = { el, onClose };
+  requestAnimationFrame(() => el.classList.add('open'));
+  show(Math.max(0, Math.min(start, ids.length - 1)));
+  prefetchSongs(ids);
+}
+function closeChartReader(silent) {
+  if (!reader) return;
+  const { el, onClose } = reader;
+  reader = null;
+  el.classList.remove('open');
+  setTimeout(() => el.remove(), 300);
+  try { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); } catch { /* ya salió */ }
+  if (!silent && history.state && history.state.chart) history.back();
+  if (onClose) onClose();
+}
+addEventListener('popstate', () => { if (reader) closeChartReader(true); });
+
+// ======================================================================================
 // Pantalla 2: la fecha — carrusel de alabanzas abajo, el canto elegido arriba
 // ======================================================================================
 function viewService(date, selId) {
@@ -1038,6 +1333,7 @@ function viewService(date, selId) {
 
   $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/' })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 170px)">
     <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
+    <div class="tabs view-sel" id="svView"><button data-vm="lista" class="on">☰ Lista</button><button data-vm="chart">🎼 Solo chart</button></div>
     <div id="svSteps"></div>
     <div class="modes" id="svModes"></div>
     <div id="svNote"></div>
@@ -1226,8 +1522,23 @@ function viewService(date, selId) {
     renderCar();
     const after = JSON.stringify(items.find((x) => x.id === sel) || null);
     if (before !== after || !$('svDetail').innerHTML) renderDetail();
+    // Los charts de esta lista se van guardando en el teléfono desde ya.
+    prefetchSongs(items.map((it) => it.songId));
   }));
   viewSubs.push(() => { if (commentsOff) commentsOff(); });
+  // «Lista» / «Solo chart»: el lector a pantalla completa con los cantos de esta lista en orden.
+  $('svView').onclick = (e) => {
+    const b = e.target.closest('[data-vm]');
+    if (!b || b.dataset.vm !== 'chart') return;
+    $('svView').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    const keys = Object.fromEntries(items.map((it) => [it.songId, val(it, 'key')]));
+    const start = Math.max(0, items.findIndex((it) => it.id === sel));
+    setTimeout(() => openChartReader({
+      songIds: items.map((it) => it.songId), start, keys,
+      onClose: () => { if ($('svView')) $('svView').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.vm === 'lista')); },
+    }), 120);
+  };
+  viewSubs.push(() => closeChartReader(true));
 }
 
 // Agregar un canto a una lista: de la biblioteca o uno nuevo.
@@ -1334,6 +1645,18 @@ function sectionsOf(text) {
   if (cur.name || cur.body.join('').trim()) out.push(cur);
   return out.map((s) => ({ name: s.name, body: s.body.join('\n').trim() }));
 }
+// Divide la letra de una parte en diapositivas de n líneas (como «Dividir» de Letras). Si ya tiene
+// líneas en blanco (diapositivas hechas a mano) se respeta, salvo que se pida dividir de nuevo.
+function splitSlides(body, n, force = false) {
+  const text = String(body || '').replace(/\r/g, '').trim();
+  if (!text || (!force && /\n\s*\n/.test(text))) return text;
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!force && lines.length <= n) return text;
+  const out = [];
+  for (let i = 0; i < lines.length; i += n) out.push(lines.slice(i, i + n).join('\n'));
+  return out.join('\n\n');
+}
+const splitN = () => { try { return Number(localStorage.getItem('listas-dividir')) || 2; } catch { return 2; } };
 const textOf = (secs) => secs.filter((s) => s.name || s.body.trim()).map((s) => (s.name ? `[${s.name}]\n` : '') + s.body.trim()).join('\n\n');
 const secChip = (name) => `<span class="sec-chip k-${secKind(name)}">${esc(name || 'Letra')}</span>`;
 
@@ -1370,6 +1693,10 @@ function openSong(id, mode = 'letra') {
       show.classList.remove('swap'); void show.offsetWidth; show.classList.add('swap');
     };
     filesOff = api.watchFiles(id, (files) => {
+      // La lista de archivos del lector se mantiene al día (al subir o borrar uno).
+      filesOf.set(id, Promise.resolve(files.slice().sort((a, b) => (a.at || 0) - (b.at || 0))));
+      prefetched.delete(id);
+      prefetchSongs([id]);
       if (!$('soFiles')) return;
       $('soFiles').innerHTML = files.map((f) => `<button class="file" data-file="${f.id}" data-type="${esc(f.type)}">${f.type === 'application/pdf' ? '📕' : '🖼'}<span>${esc(f.name)}</span>${(isMod() || f.by === user.uid) ? `<i data-delfile="${f.id}">✕</i>` : ''}</button>`).join('') || '<span class="small muted">Aún no hay charts ni partituras.</span>';
     });
@@ -1378,15 +1705,9 @@ function openSong(id, mode = 'letra') {
       if (del) { e.stopPropagation(); if (confirm('¿Borrar este archivo?')) { await api.deleteFile(id, del.dataset.delfile); toast('Archivo borrado'); } return; }
       const f = e.target.closest('[data-file]');
       if (!f) return;
-      toast('Abriendo…');
-      try {
-        const b64 = await api.getFile(id, f.dataset.file);
-        const bin = atob(b64);
-        const bytes = new Uint8Array(bin.length);
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-        const url = URL.createObjectURL(new Blob([bytes], { type: f.dataset.type }));
-        window.open(url, '_blank') || (location.href = url);
-      } catch { toast('No se pudo abrir el archivo'); }
+      // Se abre en el lector de la app (pantalla completa), no en otra pestaña.
+      closeSheet(true);
+      openChartReader({ songIds: [id] });
     };
     if ($('soUp')) $('soUp').onchange = async (e) => {
       const file = e.target.files[0];
@@ -1463,7 +1784,8 @@ function editSong(id, opts = {}) {
     ${full ? `<label class="l">Letra por partes</label>
     <div id="edSecs"></div>
     <div class="sec-add" id="edAdd">${SECTIONS.map((n) => `<button data-add="${n}" class="k-${secKind(n)}">＋ ${n}</button>`).join('')}</div>
-    <div class="small muted">Dentro de una parte, deja una línea en blanco para pasar a otra diapositiva.</div>
+    <div class="split-row"><span>Diapositivas de</span><select id="edSplitN">${[2, 3, 4].map((n) => `<option value="${n}"${n === splitN() ? ' selected' : ''}>${n} líneas</option>`).join('')}</select><button type="button" class="link" id="edSplit">Dividir de nuevo</button></div>
+    <div class="small muted">Como en el Temporizador: pega la letra y se divide sola en diapositivas. Si pegas la canción con «[Coro]», «[Verso 1]»…, se separa sola en sus partes.</div>
     <label class="l">Chart (acordes sobre la letra)</label><textarea id="edChart" class="chart" placeholder="G          D&#10;Grande eres Jehová">${esc(s.chart || '')}</textarea>
     <div class="hint">🔗 Al guardar, el canto también queda en <b>Letras</b> del Temporizador. Las fotos y PDF de partituras se suben desde «Chart».</div>`
     : '<div class="hint">Tu sugerencia les llega a los moderadores. Cuando la aprueben, ellos le agregan la letra por partes.</div>'}
@@ -1490,6 +1812,30 @@ function editSong(id, opts = {}) {
     renderSecs();
     if ($('edSecs')) {
       $('edSecs').oninput = (e) => { const ta = e.target.closest('[data-body]'); if (ta) secs[Number(ta.closest('[data-i]').dataset.i)].body = ta.value; };
+      // Al pegar: si trae partes («[Coro]»…), se separan solas; si no, se divide en diapositivas.
+      $('edSecs').addEventListener('paste', (e) => {
+        const ta = e.target.closest('[data-body]');
+        if (!ta) return;
+        const text = ((e.clipboardData && e.clipboardData.getData('text/plain')) || '').replace(/\r/g, '');
+        const i = Number(ta.closest('[data-i]').dataset.i);
+        if (/^\s*\[.+\]\s*$/m.test(text)) {
+          e.preventDefault();
+          const pasted = sectionsOf(text).map((x) => ({ name: x.name || secs[i].name, body: splitSlides(x.body, splitN()) }));
+          // Si la parte estaba vacía se reemplaza; si ya tenía letra, las nuevas van después.
+          if (secs[i].body.trim()) secs.splice(i + 1, 0, ...pasted); else secs.splice(i, 1, ...pasted);
+          fresh = -1; renumber(); renderSecs();
+          toast(`✓ ${pasted.length} parte${pasted.length === 1 ? '' : 's'} separada${pasted.length === 1 ? '' : 's'}`);
+          return;
+        }
+        const lines = text.split('\n').filter((l) => l.trim());
+        if (/\n\s*\n/.test(text.trim()) || lines.length <= splitN()) return;
+        e.preventDefault();
+        ta.setRangeText(splitSlides(text, splitN()), ta.selectionStart, ta.selectionEnd, 'end');
+        secs[i].body = ta.value;
+        toast(`Letra dividida en diapositivas de ${splitN()} líneas`);
+      });
+      $('edSplitN').onchange = () => { try { localStorage.setItem('listas-dividir', $('edSplitN').value); } catch { /* sin almacenamiento */ } };
+      $('edSplit').onclick = () => { secs.forEach((x) => { x.body = splitSlides(x.body, splitN(), true); }); renderSecs(); toast(`Dividido en diapositivas de ${splitN()} líneas`); };
       $('edSecs').onclick = async (e) => {
         const box = e.target.closest('[data-i]');
         if (!box) return;
@@ -1521,7 +1867,8 @@ function editSong(id, opts = {}) {
       if (!title) { shake($('edTitle')); $('edErr').textContent = 'Escribe el título'; return; }
       if (youtube && !ytId(youtube)) { shake($('edYt')); $('edErr').textContent = 'El enlace de YouTube no es válido'; return; }
       const data = { title, author: $('edAuthor').value.trim(), youtube, key };
-      if (full) { data.text = textOf(secs); data.chart = $('edChart').value.replace(/\r/g, ''); }
+      // Una parte escrita sin líneas en blanco se divide en diapositivas (igual que en Letras).
+      if (full) { data.text = textOf(secs.map((x) => ({ ...x, body: splitSlides(x.body, splitN()) }))); data.chart = $('edChart').value.replace(/\r/g, ''); }
       try {
         if (id) {
           await busy($('edSave'), api.updateSong(id, data));
@@ -1534,7 +1881,7 @@ function editSong(id, opts = {}) {
         else celebrate(full ? 'Canto agregado' : 'Sugerencia enviada');
       } catch (e) { shake($('edSave')); if ($('edErr')) $('edErr').textContent = e.message || 'No se pudo guardar'; }
     };
-    if ($('edDel')) $('edDel').onclick = async () => { if (!confirm('¿Borrar este canto del repertorio?')) return; await api.deleteSong(id); closeSheet(); toast('Canto borrado'); };
+    if ($('edDel')) $('edDel').onclick = async () => { if (!confirm('¿Borrar este canto del repertorio? También se borra de Letras en las computadoras con el Temporizador.')) return; await api.deleteSong(id); closeSheet(); toast('Canto borrado'); };
   });
 }
 
@@ -1715,7 +2062,11 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
       const wasRole = me && me.role;
       me = m;
       if (isMember() && !dataOff.length) {
-        dataOff.push(api.watchServices((list) => { services = list; servicesLoaded = true; hideSplash(); serviceListeners.forEach((f) => { try { f(); } catch (e) { console.warn(e); } }); }));
+        dataOff.push(api.watchServices((list) => {
+          services = list; servicesLoaded = true; hideSplash();
+          serviceListeners.forEach((f) => { try { f(); } catch (e) { console.warn(e); } });
+          setTimeout(prefetchUpcoming, 2500); // los charts de la próxima lista, en segundo plano
+        }));
         dataOff.push(api.watchSongs((list) => { songs = list; songListeners.forEach((f) => f()); }));
         dataOff.push(api.watchNotifications(onNotifs));
         dataOff.push(api.watchMembers((list) => { allMembers = Object.fromEntries(list.map((x) => [x.id, x])); }));
