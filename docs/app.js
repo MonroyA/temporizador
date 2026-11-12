@@ -362,7 +362,11 @@ let notifs = [];
 let notifsReady = false;
 const SEEN_KEY = 'listas-avisos-visto';
 const seenAt = () => { try { return Number(localStorage.getItem(SEEN_KEY) || 0); } catch { return 0; } };
-const forMe = (n) => (n.to === user.uid || (n.to === 'moderadores' && isMod())) && (api.demo || n.from !== user.uid);
+// Los avisos que cada quien borra se guardan en su ficha (notifCleared = «borrar todo» hasta esa
+// hora; notifHidden = borrados uno por uno): así quedan borrados en todos sus teléfonos y no se
+// le borran a los demás.
+const notifHidden = (n) => !!me && ((me.notifCleared && n.at <= me.notifCleared) || (Array.isArray(me.notifHidden) && me.notifHidden.includes(n.id)));
+const forMe = (n) => (n.to === user.uid || (n.to === 'moderadores' && isMod())) && (api.demo || n.from !== user.uid) && !notifHidden(n);
 const myNotifs = () => (user ? notifs.filter(forMe) : []);
 const unread = () => myNotifs().filter((n) => n.at > seenAt()).length;
 const bellBadge = () => { const n = unread(); return n ? `<b>${n > 9 ? '9+' : n}</b>` : ''; };
@@ -437,9 +441,37 @@ function renderNotifs() {
   if (!box) return;
   const seen = shownSeen;
   const list = myNotifs();
-  box.innerHTML = list.map((n) => `<button class="notif${n.at > seen ? ' new' : ''}" data-go="${esc(n.link || '#/avisos')}"><span class="ic">${NOTIF_IC[n.kind] || '🔔'}</span><span class="t"><b>${esc(n.text)}</b><small>${new Date(n.at).toLocaleString('es', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></span></button>`).join('')
-    || `<div class="empty">Sin avisos todavía.<br>${isMod() ? 'Aquí te llegará cuando alguien envíe su lista.' : 'Aquí verás cuando comenten tu lista.'}</div>`;
+  box.innerHTML = (list.length ? `<div class="sec" style="margin-top:0"><h3>${list.length} aviso${list.length === 1 ? '' : 's'}</h3><button class="link" id="ntClear">🗑 Borrar todo</button></div>` : '')
+    + list.map((n) => `<div class="notif${n.at > seen ? ' new' : ''}" role="button" tabindex="0" data-go="${esc(n.link || '#/avisos')}" data-nid="${esc(n.id)}"><span class="ic">${NOTIF_IC[n.kind] || '🔔'}</span><span class="t"><b>${esc(n.text)}</b><small>${new Date(n.at).toLocaleString('es', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></span><button class="nt-del" data-delnotif="${esc(n.id)}" aria-label="Borrar este aviso">✕</button></div>`).join('')
+    || `<div class="empty">Sin avisos.<br>${isMod() ? 'Aquí te llegará cuando alguien envíe su lista.' : 'Aquí verás cuando comenten tu lista.'}</div>`;
 }
+// Borrar avisos: el ✕ de cada uno (se va deslizando) o «Borrar todo».
+async function hideNotifs(patch) {
+  me = { ...me, ...patch }; // al instante en pantalla; la nube lo confirma después
+  renderNotifs();
+  updateBell();
+  try { await api.updateMember(user.uid, patch); } catch { toast('No se pudo guardar: revisa la conexión'); }
+}
+document.addEventListener('click', async (e) => {
+  const del = e.target.closest('[data-delnotif]');
+  if (del) {
+    e.stopPropagation();
+    const row = del.closest('.notif');
+    if (row) { row.classList.add('leaving'); await wait(220); }
+    const hidden = (Array.isArray(me.notifHidden) ? me.notifHidden : []).filter((id) => notifs.some((n) => n.id === id));
+    hideNotifs({ notifHidden: [...hidden, del.dataset.delnotif].slice(-200) });
+    haptic(8);
+    return;
+  }
+  if (e.target.closest('#ntClear')) {
+    e.stopPropagation();
+    if (!confirm('¿Borrar todos los avisos? (Solo se borran para ti.)')) return;
+    document.querySelectorAll('#ntList .notif').forEach((r, i) => { r.style.transitionDelay = `${i * 30}ms`; r.classList.add('leaving'); });
+    await wait(260);
+    hideNotifs({ notifCleared: Date.now(), notifHidden: [] });
+    toast('Avisos borrados');
+  }
+}, true);
 document.addEventListener('click', (e) => {
   const g = e.target.closest('[data-go]');
   if (!g) return;
@@ -1263,13 +1295,18 @@ function showFile(fb, songId, f) {
 // es instantáneo. Se preparan también el anterior y el siguiente. Deslizar ← → o tocar los
 // números de abajo cambia de canto; «‹ Lista» vuelve.
 let reader = null;
-function openChartReader({ songIds, start = 0, keys = {}, onClose }) {
+// mode: 'chart' (fotos, PDF y acordes) o 'letra' (solo la letra por partes, en grande).
+const LYR_SIZE_KEY = 'listas-letra-tam';
+function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart' }) {
   closeChartReader(true);
   const ids = songIds.filter(Boolean);
   if (!ids.length) { toast('Esta lista aún no tiene cantos'); return; }
   const el = document.createElement('div');
-  el.className = 'cr';
-  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div><span class="cr-key"></span></div>
+  el.className = 'cr' + (mode === 'letra' ? ' cr-letra' : '');
+  let lyrSize = 20;
+  try { lyrSize = Number(localStorage.getItem(LYR_SIZE_KEY)) || 20; } catch { /* sin almacenamiento */ }
+  el.style.setProperty('--lyr', lyrSize + 'px');
+  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div>${mode === 'letra' ? '<button class="cr-size" data-crsize="-2" aria-label="Letra más pequeña">A−</button><button class="cr-size" data-crsize="2" aria-label="Letra más grande">A+</button>' : ''}<span class="cr-key"></span></div>
     <div class="cr-stage"></div>
     <div class="cr-nav"><button data-crgo="-1" aria-label="Anterior">‹</button><div class="cr-strip">${ids.map((id, i) => `<button data-crto="${i}">${i + 1}</button>`).join('')}</div><button data-crgo="1" aria-label="Siguiente">›</button></div>`;
   document.body.appendChild(el);
@@ -1284,6 +1321,14 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose }) {
     box.innerHTML = '<div class="cr-loading"><i></i></div>';
     stage.appendChild(box);
     built.set(i, box);
+    if (mode === 'letra') {
+      // Solo la letra: cada parte con su color y cada diapositiva separada.
+      const s = songById(id) || {};
+      const secs = sectionsOf(s.text);
+      box.innerHTML = secs.map((x) => `<div class="cr-sec">${x.name ? secChip(x.name) : ''}${x.body.split(/\n\s*\n/).filter((t) => t.trim()).map((t) => `<div class="cr-lyr k-${secKind(x.name)}">${esc(t.trim())}</div>`).join('')}</div>`).join('')
+        || '<div class="cr-msg">Este canto aún no tiene letra.</div>';
+      return;
+    }
     songFiles(id).catch(() => []).then((files) => {
       const s = songById(id) || {};
       box.innerHTML = '';
@@ -1326,6 +1371,14 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose }) {
   }
   el.addEventListener('click', (e) => {
     if (e.target.closest('[data-crback]')) { closeChartReader(); return; }
+    const sz = e.target.closest('[data-crsize]');
+    if (sz) {
+      lyrSize = Math.max(14, Math.min(40, lyrSize + Number(sz.dataset.crsize)));
+      el.style.setProperty('--lyr', lyrSize + 'px');
+      try { localStorage.setItem(LYR_SIZE_KEY, String(lyrSize)); } catch { /* sin almacenamiento */ }
+      haptic(4);
+      return;
+    }
     const g = e.target.closest('[data-crgo]');
     if (g) { show(cur + Number(g.dataset.crgo), Number(g.dataset.crgo)); haptic(6); return; }
     const t = e.target.closest('[data-crto]');
@@ -1354,7 +1407,7 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose }) {
   reader = { el, onClose };
   requestAnimationFrame(() => el.classList.add('open'));
   show(Math.max(0, Math.min(start, ids.length - 1)));
-  prefetchSongs(ids);
+  if (mode !== 'letra') prefetchSongs(ids);
 }
 function closeChartReader(silent) {
   if (!reader) return;
@@ -1384,16 +1437,17 @@ function viewService(date, selId) {
   const canEdit = () => canEditList(svc());
   const canAdd = () => canEditList(svc());
 
-  $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/' })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 170px)">
+  // Arriba: «Lista» (los cantos en cascada; al tocar uno se despliega todo lo suyo), «Chart» y
+  // «Letra» (los dos últimos, a pantalla completa con los cantos en orden).
+  $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/' })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 40px)">
     <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
-    <div class="tabs view-sel" id="svView"><button data-vm="lista" class="on">☰ Lista</button><button data-vm="chart">🎼 Solo chart</button></div>
+    <div class="tabs view-sel" id="svView"><button data-vm="lista" class="on">☰ Lista</button><button data-vm="chart">🎼 Chart</button><button data-vm="letra">Aa Letra</button></div>
     <div id="svSteps"></div>
     <div class="modes" id="svModes"></div>
     <div id="svNote"></div>
-    <div id="svDetail"></div>
-  </div>
-  <div class="songs-car"><div class="wrap"><div class="sec"><h3>Alabanzas</h3><button class="link" id="svAddTop">＋ Agregar</button></div>
-    <div class="hscroll" id="svCar"></div></div></div>`;
+    <div class="sec"><h3>Alabanzas <span class="muted small" id="svCount"></span></h3><button class="link" id="svAddTop">＋ Agregar</button></div>
+    <div class="sv-list" id="svList"></div>
+  </div>`;
 
   function renderHead() {
     const s = svc();
@@ -1413,89 +1467,66 @@ function viewService(date, selId) {
     $('svNote').innerHTML = `<div class="field"><div class="lab">${esc(s.title || 'Servicio')}${s.leaderName ? ` · 🎤 ministra <b style="color:var(--title)">${esc(s.leaderName)}</b>` : ''}</div>${s.note ? `<div class="small">${esc(s.note)}</div>` : ''}
       ${sendBtn}</div>`;
   }
-  function renderCar() {
-    $('svCar').innerHTML = items.map((it, i) => {
-      const k = val(it, 'key');
-      return `<button class="song-card${it.id === sel ? ' sel' : ''}" data-sel="${it.id}"><span class="top"><span class="ic">${i + 1}</span><span class="k">${esc(k || '—')}</span></span><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}</small></button>`;
-    }).join('') + (canAdd() ? '<button class="song-card add" data-addsong>＋<br>Agregar</button>' : '');
+
+  // Lista en cascada. La alabanza abierta guarda su contenido (lo que estés escribiendo en notas
+  // o comentarios no se pierde aunque la lista se actualice).
+  let opened = null; // id que tenía el detalle abierto la última vez que se dibujó
+  function renderList() {
     $('svAddTop').style.display = canAdd() ? '' : 'none';
-    const selEl = $('svCar').querySelector('.sel');
-    if (selEl) selEl.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+    $('svCount').textContent = items.length ? `· ${items.length}` : '';
+    const keep = $('svDetail');
+    if (keep) keep.remove();
+    $('svList').innerHTML = items.map((it, i) => {
+      const k = val(it, 'key');
+      const notes = it.notes ? `<span class="sv-tag">✎ ${esc(it.notes.slice(0, 40))}${it.notes.length > 40 ? '…' : ''}</span>` : '';
+      return `<div class="sv-item${it.id === sel ? ' open' : ''}" data-item="${it.id}">
+        <button class="sv-head" data-sel="${it.id}"><span class="sv-num">${i + 1}</span><span class="sv-t"><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}${ytId(val(it, 'youtube')) ? ' · ▶ video' : ''}</small>${notes}</span>
+          <span class="sv-key">${esc(k || '—')}</span><span class="sv-chev">›</span></button>
+      </div>`;
+    }).join('') || `<div class="empty">Esta lista aún no tiene cantos.${canAdd() ? '<br>Toca «＋ Agregar».' : ''}</div>`;
+    const row = sel && $('svList').querySelector(`[data-item="${sel}"]`);
+    if (row) {
+      const body = keep && opened === sel ? keep : Object.assign(document.createElement('div'), { id: 'svDetail', className: 'sv-body' });
+      row.appendChild(body);
+    }
+    opened = row ? sel : null;
   }
-  // Cambiar de alabanza: el detalle entra desde el lado hacia donde vas (dir 1 = siguiente).
-  function selectItem(id, dir) {
-    sel = id;
-    history.replaceState(null, '', `#/s/${date}/${sel}`);
-    renderCar(); renderDetail();
-    const d = $('svDetail');
-    d.style.transition = ''; d.style.transform = ''; d.style.opacity = '';
-    d.classList.remove('in-next', 'in-prev', 'in-pop');
-    void d.offsetWidth;
-    if (!reducedMotion()) d.classList.add(dir > 0 ? 'in-next' : dir < 0 ? 'in-prev' : 'in-pop');
+  // Tocar una alabanza la abre (y cierra la que estaba abierta); tocarla otra vez la cierra.
+  function selectItem(id) {
+    sel = sel === id ? null : id;
+    history.replaceState(null, '', sel ? `#/s/${date}/${sel}` : `#/s/${date}`);
+    if (!sel && commentsOff) { commentsOff(); commentsOff = null; }
+    opened = null;
+    renderList();
+    if (sel) renderDetail();
     haptic(6);
-    scrollTo({ top: 0, behavior: 'smooth' });
+    const row = sel && $('svList').querySelector(`[data-item="${sel}"]`);
+    if (row) setTimeout(() => row.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }), 60);
   }
-  // Gesto: deslizar el detalle a la izquierda/derecha para pasar a la siguiente/anterior.
-  (function detailSwipe() {
-    const d = $('svDetail');
-    let sx = 0, sy = 0, dx = 0, on = false, horiz = null;
-    d.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1 || !sel || e.target.closest('input, textarea, select, iframe, .keys, .chart, .video')) { on = false; return; }
-      sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; on = true; horiz = null;
-    }, { passive: true });
-    d.addEventListener('touchmove', (e) => {
-      if (!on) return;
-      dx = e.touches[0].clientX - sx;
-      const dy = e.touches[0].clientY - sy;
-      if (horiz === null && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) horiz = Math.abs(dx) > Math.abs(dy) * 1.3;
-      if (!horiz) return;
-      e.preventDefault();
-      const i = items.findIndex((x) => x.id === sel);
-      const edge = (dx > 0 && i === 0) || (dx < 0 && i === items.length - 1);
-      const x = edge ? dx * 0.25 : dx; // resistencia en la primera y la última
-      d.style.transition = 'none';
-      d.style.transform = `translateX(${x}px) rotate(${x / 60}deg)`;
-      d.style.opacity = String(1 - Math.min(0.5, Math.abs(x) / 600));
-    }, { passive: false });
-    d.addEventListener('touchend', () => {
-      if (!on || !horiz) { on = false; return; }
-      on = false;
-      const i = items.findIndex((x) => x.id === sel);
-      const j = dx < -70 ? i + 1 : dx > 70 ? i - 1 : i;
-      if (j !== i && items[j]) {
-        d.style.transition = 'transform .18s ease-in, opacity .18s';
-        d.style.transform = `translateX(${dx < 0 ? -innerWidth : innerWidth}px)`;
-        d.style.opacity = '0';
-        setTimeout(() => selectItem(items[j].id, j > i ? 1 : -1), 170);
-      } else {
-        d.style.transition = 'transform .35s cubic-bezier(.2,1.4,.4,1), opacity .3s';
-        d.style.transform = ''; d.style.opacity = '';
-      }
-    });
-  }());
   function renderDetail() {
     const it = items.find((x) => x.id === sel);
-    if (!it) {
-      $('svDetail').innerHTML = items.length ? '<div class="empty">Toca una alabanza de abajo para ver su referencia, tonalidad y comentarios.</div>'
-        : `<div class="empty">Esta lista aún no tiene cantos.${canAdd() ? '<br>Toca «＋ Agregar» abajo.' : ''}</div>`;
-      return;
-    }
-    const i = items.indexOf(it);
+    if (!it || !$('svDetail')) return;
+    // Lo que estabas escribiendo (indicaciones, enlace, comentario) se conserva al redibujar.
+    const typing = $('svDetail').dataset.item === it.id
+      ? ['dtNotes', 'dtYt', 'dtComment'].map((k) => [k, $(k) && $(k).value, $(k) && document.activeElement === $(k)]).filter(([, v]) => v != null)
+      : [];
+    setTimeout(() => typing.forEach(([k, v, focused]) => { const el = $(k); if (el && v !== undefined) { el.value = v; if (focused) el.focus({ preventScroll: true }); } }), 0);
+    $('svDetail').dataset.item = it.id;
     const song = itemSong(it);
     const yt = ytId(val(it, 'youtube'));
     const k = val(it, 'key');
     $('svDetail').innerHTML = `
-      <div class="field"><div class="song-head"><span class="num">${i + 1}</span><div class="grow"><b>${esc(val(it, 'title'))}</b><small>${esc(val(it, 'author'))}${it.byName ? ' · agregado por ' + esc(it.byName) : ''}</small></div></div></div>
+      ${it.byName ? `<div class="small muted" style="margin:0 2px 8px">Agregado por ${esc(it.byName)}</div>` : ''}
       <div class="field"><div class="lab">▶ Referencia</div>${yt ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>` : '<div class="small muted">Sin enlace de YouTube.</div>'}
         ${canEdit(it) ? `<div class="send"><input id="dtYt" placeholder="Pega el enlace de YouTube" value="${esc(it.youtube || '')}"><button data-saveyt>Guardar</button></div>` : ''}</div>
       <div class="field"><div class="lab">♪ Tonalidad <b style="color:var(--blue);margin-left:auto;font-size:15px">${esc(k || '—')}</b></div>
         ${canEdit(it) ? `<div class="keys">${KEYS.map((x) => `<button data-key="${x}" class="${k.replace('m', '') === x ? 'on' : ''}">${x}</button>`).join('')}</div>
         <div class="keyline"><button class="mode${/m$/.test(k) ? ' on' : ''}" data-minor>Menor</button><span class="small muted">${song.key && song.key !== k ? 'Original: ' + esc(song.key) : ''}</span></div>` : ''}</div>
-      <div class="field"><div class="lab">✎ Notas</div>${canEdit(it) ? `<textarea id="dtNotes" placeholder="Indicaciones: quién empieza, repeticiones…">${esc(it.notes || '')}</textarea><div class="send" style="justify-content:flex-end"><button data-savenotes>Guardar notas</button></div>` : `<div>${esc(it.notes || '—')}</div>`}</div>
+      <div class="field"><div class="lab">✎ Indicaciones</div>${canEdit(it) ? `<textarea id="dtNotes" placeholder="Quién empieza, repeticiones, dinámica…">${esc(it.notes || '')}</textarea><div class="send" style="justify-content:flex-end"><button data-savenotes>Guardar</button></div>` : `<div>${esc(it.notes || '—')}</div>`}</div>
       <div class="field"><div class="lab">💬 Comentarios</div><div id="dtComments"><div class="small muted">Cargando…</div></div>
         <div class="send"><input id="dtComment" maxlength="400" placeholder="Escribe un comentario…"><button data-comment>Enviar</button></div></div>
       ${it.songId ? `<div class="field"><div class="lab">📄 Charts, partituras y letra</div><button class="btn ghost" data-go="#/cantos" data-songopen="${it.songId}">Abrir el canto</button></div>` : ''}
-      ${canEditList(svc()) ? `<div class="reorder"><button data-move="-1">← Antes</button><button data-move="1">Después →</button></div>` : ''}
+      ${canEditList(svc()) ? `<div class="reorder"><button data-move="-1">↑ Subir</button><button data-move="1">↓ Bajar</button></div>` : ''}
       ${canEdit(it) ? '<button class="btn red" style="margin-top:12px" data-delitem>Quitar de esta lista</button>' : ''}`;
     if (commentsOff) commentsOff();
     commentsOff = api.watchComments(date, it.id, (list) => { comments = list; renderComments(); });
@@ -1509,7 +1540,7 @@ function viewService(date, selId) {
   $('view').onclick = async (e) => {
     const t = e.target;
     const s = t.closest('[data-sel]');
-    if (s) { const from = items.findIndex((x) => x.id === sel); const to = items.findIndex((x) => x.id === s.dataset.sel); selectItem(s.dataset.sel, from < 0 ? 0 : to > from ? 1 : to < from ? -1 : 0); return; }
+    if (s) { selectItem(s.dataset.sel); return; }
     if (t.closest('[data-addsong]') || t.closest('#svAddTop')) {
       if (!canAdd()) return;
       if (canEditList(svc())) go(`#/s/${date}/cantos`); else pickSong(date, items);
@@ -1565,29 +1596,29 @@ function viewService(date, selId) {
   viewSubs.push(() => { if (commentsOff) commentsOff(); });
 
   renderHead();
-  viewSubs.push(onServices(() => { renderHead(); renderCar(); }));
+  viewSubs.push(onServices(() => { renderHead(); renderList(); }));
   viewSubs.push(api.watchItems(date, (list) => {
     // Mantiene al día lo que se está escribiendo: solo se rehace el detalle si cambió algo de él.
     const before = JSON.stringify(items.find((x) => x.id === sel) || null);
     items = list;
     if (sel && !items.some((x) => x.id === sel)) sel = null;
     renderHead();
-    renderCar();
+    renderList();
     const after = JSON.stringify(items.find((x) => x.id === sel) || null);
-    if (before !== after || !$('svDetail').innerHTML) renderDetail();
+    if (sel && (before !== after || !$('svDetail') || !$('svDetail').innerHTML)) renderDetail();
     // Los charts de esta lista se van guardando en el teléfono desde ya.
     prefetchSongs(items.map((it) => it.songId));
   }));
   viewSubs.push(() => { if (commentsOff) commentsOff(); });
-  // «Lista» / «Solo chart»: el lector a pantalla completa con los cantos de esta lista en orden.
+  // «Chart» y «Letra»: el lector a pantalla completa con los cantos de esta lista en orden.
   $('svView').onclick = (e) => {
     const b = e.target.closest('[data-vm]');
-    if (!b || b.dataset.vm !== 'chart') return;
+    if (!b || b.dataset.vm === 'lista') return;
     $('svView').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
     const keys = Object.fromEntries(items.map((it) => [it.songId, val(it, 'key')]));
     const start = Math.max(0, items.findIndex((it) => it.id === sel));
     setTimeout(() => openChartReader({
-      songIds: items.map((it) => it.songId), start, keys,
+      songIds: items.map((it) => it.songId), start, keys, mode: b.dataset.vm,
       onClose: () => { if ($('svView')) $('svView').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.vm === 'lista')); },
     }), 120);
   };
@@ -1631,13 +1662,16 @@ async function addToList(date, items, songId, song, stay) {
 // Pantalla 3: cantos (sugeridos y agregados) con charts y partituras
 // ======================================================================================
 function viewSongs() {
-  let tab = 'todos';
+  // Dos grupos: Alabanza y Adoración (se recuerda el último que viste). Las sugerencias salen en
+  // su grupo, marcadas, con «Aprobar» para los moderadores.
+  let tab = 'alabanza';
+  try { tab = sessionStorage.getItem('cantos-grupo') || 'alabanza'; } catch { /* sin almacenamiento */ }
   let q = '';
   let animTab = ''; // los boletos entran en cascada al abrir y al cambiar de pestaña
   $('view').innerHTML = `${hero({ title: 'Cantos', back: '#/' })}<div class="sheetbody">
     <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
     <h2 class="big" style="text-align:center;font-size:21px">Repertorio del equipo</h2>
-    <div class="tabs" id="sgTabs"><button data-tab="todos" class="on">Agregados</button><button data-tab="sugerido">Sugeridos</button></div>
+    <div class="tabs" id="sgTabs">${Object.entries(CATS).map(([k, n]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${n} <span class="tab-n" data-n="${k}"></span></button>`).join('')}</div>
     <div id="sgLink"></div>
     <div class="search" style="margin-bottom:16px"><span>🔍</span><input id="sgQ" placeholder="Buscar canto o autor…"></div>
     <div id="sgList"></div>
@@ -1646,24 +1680,33 @@ function viewSongs() {
   const render = () => {
     // Los agregados son los mismos cantos de Letras en el Temporizador.
     const st = api.tempoStatus ? api.tempoStatus() : 'nube';
-    $('sgLink').innerHTML = tab === 'sugerido' ? '<div class="small muted" style="margin:-6px 4px 12px">Los moderadores aprueban las sugerencias; al aprobarlas pasan al Temporizador.</div>'
-      : `<div class="link-note ${st}"><span class="dot"></span>${st === 'ok' ? 'Compartidos con el <b>Temporizador</b>: lo que agrega un moderador aparece en Letras.' : st === 'off' ? 'El <b>Temporizador</b> no está abierto en la PC: se muestran los últimos cantos que se recibieron.' : st === 'buscando' ? 'Conectando con el <b>Temporizador</b>…' : 'Compartidos con el <b>Temporizador</b> por la nube.'}</div>`;
-    const list = songs.filter((s) => (tab === 'sugerido' ? s.status === 'sugerido' : s.status !== 'sugerido'))
-      .filter((s) => !q || (s.title + ' ' + (s.author || '')).toLowerCase().includes(q));
+    $('sgLink').innerHTML = `<div class="link-note ${st}"><span class="dot"></span><span>${st === 'ok' ? 'Compartidos con el <b>Temporizador</b>: lo que agrega un moderador aparece en Letras.' : st === 'off' ? 'El <b>Temporizador</b> no está abierto en la PC: se muestran los últimos cantos que se recibieron.' : st === 'buscando' ? 'Conectando con el <b>Temporizador</b>…' : 'Compartidos con el <b>Temporizador</b> por la nube.'}</span></div>`;
+    Object.keys(CATS).forEach((k) => { const n = songs.filter((s) => catOf(s) === k).length; const el = document.querySelector(`[data-n="${k}"]`); if (el) el.textContent = n ? `· ${n}` : ''; });
+    // Las sugerencias primero (para que los moderadores las vean), después por título.
+    const list = songs.filter((s) => catOf(s) === tab)
+      .filter((s) => !q || (s.title + ' ' + (s.author || '')).toLowerCase().includes(q))
+      .sort((a, b) => (b.status === 'sugerido') - (a.status === 'sugerido') || (a.title || '').localeCompare(b.title || ''));
     const enter = animTab !== tab;
     animTab = tab;
-    $('sgList').innerHTML = list.map((s, i) => `<div class="ticket${s.status === 'sugerido' ? ' sug' : ''}${enter && i < 12 ? ' enter' : ''}" style="--i:${i}">
+    $('sgList').innerHTML = list.map((s, i) => `<div class="ticket${s.status === 'sugerido' ? ' sug' : ''}${catOf(s) === 'adoracion' ? ' ador' : ''}${enter && i < 12 ? ' enter' : ''}" style="--i:${i}">
       <div class="top"><span class="badge"><small>TONO</small><b>${esc(s.key || '—')}</b></span><span class="t"><b>${esc(s.title)}</b><small>${esc(s.author || 'Autor sin indicar')}</small></span>
         ${isMod() ? `<button class="tk-edit" data-editsong="${s.id}" aria-label="Editar canto">✎</button>` : ''}</div>
       <div class="dash"></div>
-      <div class="bottom"><span class="ico">${ytId(s.youtube) ? '▶' : '♫'}</span><span class="grow">${s.status === 'sugerido' ? 'Sugerido por ' + esc(s.byName || '—') : sectionsOf(s.text).filter((x) => x.name).length + ' partes' + (s.chart ? ' · con chart' : '')}</span>
+      <div class="bottom"><span class="ico">${ytId(s.youtube) ? '▶' : '♫'}</span><span class="grow">${s.status === 'sugerido' ? '💡 Sugerido por ' + esc(s.byName || '—') : sectionsOf(s.text).filter((x) => x.name).length + ' partes' + (s.chart ? ' · con chart' : '')}</span>
       ${s.status === 'sugerido' && isMod() ? `<button data-approve="${s.id}">Aprobar</button>` : ''}
       <button class="ghost" data-chart="${s.id}">Chart</button><button data-letra="${s.id}">Letra</button></div></div>`).join('')
-      || `<div class="empty">${tab === 'sugerido' ? 'No hay cantos sugeridos.' : 'Aún no hay cantos.'}</div>`;
+      || `<div class="empty">${q ? 'Sin resultados.' : `Aún no hay cantos de ${CATS[tab].toLowerCase()}.`}</div>`;
   };
-  $('sgTabs').onclick = (e) => { const b = e.target.closest('[data-tab]'); if (!b) return; tab = b.dataset.tab; $('sgTabs').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); render(); };
+  $('sgTabs').onclick = (e) => {
+    const b = e.target.closest('[data-tab]');
+    if (!b) return;
+    tab = b.dataset.tab;
+    try { sessionStorage.setItem('cantos-grupo', tab); } catch { /* sin almacenamiento */ }
+    $('sgTabs').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    render();
+  };
   $('sgQ').oninput = (e) => { q = e.target.value.trim().toLowerCase(); render(); };
-  if ($('sgNew')) $('sgNew').onclick = () => editSong(null);
+  if ($('sgNew')) $('sgNew').onclick = () => editSong(null, { category: tab });
   $('sgList').onclick = async (e) => {
     const a = e.target.closest('[data-approve]');
     if (a) { await busy(a, api.updateSong(a.dataset.approve, { status: 'agregado' })); celebrate('Canto aprobado'); return; }
@@ -1681,6 +1724,12 @@ function viewSongs() {
 }
 const songListeners = new Set();
 const onSongs = (fn) => { songListeners.add(fn); return () => songListeners.delete(fn); };
+
+// ---- Grupos del repertorio ----
+// Un canto sin grupo (p. ej. uno que vino del Temporizador) cuenta como Alabanza hasta que un
+// moderador lo cambie al editarlo.
+const CATS = { alabanza: 'Alabanza', adoracion: 'Adoración' };
+const catOf = (s) => (s && s.category === 'adoracion' ? 'adoracion' : 'alabanza');
 
 // ---- Partes de un canto (Intro, Verso, Pre-coro, Coro, Puente, Final) ----
 // Se guardan en el mismo formato que Letras del Temporizador: «[Coro]» en una línea abre la parte,
@@ -1829,6 +1878,8 @@ function editSong(id, opts = {}) {
   let secs = sectionsOf(s.text);
   let fresh = -1; // la parte recién agregada entra con animación
   openSheet(`<h2>${id ? 'Editar canto' : full ? 'Canto nuevo' : 'Sugerir canto'}</h2>
+    <label class="l">¿Dónde va?</label>
+    <div class="tabs cat-pick" id="edCat">${Object.entries(CATS).map(([k, n]) => `<button type="button" data-cat="${k}" class="${(id ? catOf(s) : opts.category || 'alabanza') === k ? 'on' : ''}">${k === 'adoracion' ? '🕊' : '🎺'} ${n}</button>`).join('')}</div>
     <label class="l">Título</label><input id="edTitle" maxlength="80" value="${esc(s.title)}" placeholder="Nombre del canto">
     <label class="l">Autor</label><input id="edAuthor" maxlength="80" value="${esc(s.author || '')}" placeholder="Opcional">
     <label class="l">Referencia de YouTube</label><input id="edYt" value="${esc(s.youtube || '')}" placeholder="https://youtube.com/watch?v=…">
@@ -1847,6 +1898,8 @@ function editSong(id, opts = {}) {
     ${id && full && !s.shared ? '<button class="btn red" id="edDel">Borrar canto</button>' : ''}
     <button class="btn ghost" id="edCancel">Cancelar</button>`, () => {
     let key = s.key || '';
+    let category = id ? catOf(s) : opts.category || 'alabanza';
+    $('edCat').onclick = (e) => { const b = e.target.closest('[data-cat]'); if (!b) return; category = b.dataset.cat; $('edCat').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); haptic(5); };
     const renderSecs = () => {
       if (!$('edSecs')) return;
       // Verso 1, Verso 2…: se numeran solos si hay más de uno.
@@ -1919,7 +1972,7 @@ function editSong(id, opts = {}) {
       const youtube = $('edYt').value.trim();
       if (!title) { shake($('edTitle')); $('edErr').textContent = 'Escribe el título'; return; }
       if (youtube && !ytId(youtube)) { shake($('edYt')); $('edErr').textContent = 'El enlace de YouTube no es válido'; return; }
-      const data = { title, author: $('edAuthor').value.trim(), youtube, key };
+      const data = { title, author: $('edAuthor').value.trim(), youtube, key, category };
       // Una parte escrita sin líneas en blanco se divide en diapositivas (igual que en Letras).
       if (full) { data.text = textOf(secs.map((x) => ({ ...x, body: splitSlides(x.body, splitN()) }))); data.chart = $('edChart').value.replace(/\r/g, ''); }
       try {
@@ -1929,9 +1982,14 @@ function editSong(id, opts = {}) {
         }
         const newId = await busy($('edSave'), api.addSong({ text: '', chart: '', ...data, status: full ? 'agregado' : 'sugerido', by: user.uid, byName: me.name }));
         closeSheet();
-        if (!full) notify('moderadores', { kind: 'canto', link: '#/cantos', text: `${me.name} sugirió el canto «${title}»` });
+        if (!full) notify('moderadores', { kind: 'canto', link: '#/cantos', text: `${me.name} sugirió el canto «${title}» para ${CATS[category]}` });
         if (opts.addTo) await addToList(opts.addTo.date, opts.addTo.items, newId, data, opts.addTo.stay);
-        else celebrate(full ? 'Canto agregado' : 'Sugerencia enviada');
+        else {
+          celebrate(full ? `Agregado en ${CATS[category]}` : 'Sugerencia enviada');
+          // Si estás en Cantos, se muestra el grupo donde quedó.
+          try { sessionStorage.setItem('cantos-grupo', category); } catch { /* sin almacenamiento */ }
+          if (location.hash === '#/cantos') setTimeout(route, 900);
+        }
       } catch (e) { shake($('edSave')); if ($('edErr')) $('edErr').textContent = e.message || 'No se pudo guardar'; }
     };
     if ($('edDel')) $('edDel').onclick = async () => { if (!confirm('¿Borrar este canto del repertorio? También se borra de Letras en las computadoras con el Temporizador.')) return; await api.deleteSong(id); closeSheet(); toast('Canto borrado'); };
