@@ -1,0 +1,1729 @@
+// Listas de alabanza: app instalable (iPhone y Android) para planear los cantos de cada servicio.
+// Moderador: crea las fechas, ordena, aprueba y marca «Listo» (el Temporizador la descarga).
+// Colaboradores: agregan cantos a las listas, sugieren cantos nuevos, comentan y suben charts.
+// Los datos viven en Firebase (nube). Sin configurar Firebase, funciona en modo demostración.
+import { FIREBASE_CONFIG } from './config.js';
+
+const $ = (id) => document.getElementById(id);
+const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid8 = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const DEMO = !FIREBASE_CONFIG.apiKey;
+
+function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2600); }
+
+// ---- Fechas ----
+const pad = (n) => String(n).padStart(2, '0');
+const keyOf = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseKey = (k) => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
+const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+const DAYS = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+const niceDate = (k) => { const d = parseKey(k); return `${DAYS[d.getDay()][0].toUpperCase()}${DAYS[d.getDay()].slice(1)} ${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+const nextSunday = () => { const d = new Date(); d.setDate(d.getDate() + ((7 - d.getDay()) % 7 || 7)); return keyOf(d); };
+const today = () => keyOf(new Date());
+// Una lista está «en preparación» hasta que quien la hizo la envía; entonces les llega a los
+// moderadores. (Los estados antiguos «revision» y «listo» cuentan como enviada.)
+const sent = (s) => !!s && ['enviada', 'revision', 'listo'].includes(s.status);
+const statusPill = (s) => (sent(s) ? '<span class="status enviada">✓ Enviada</span>' : '<span class="status prep">En preparación</span>');
+
+// ---- YouTube ----
+function ytId(url) {
+  const m = /(?:youtu\.be\/|v=|\/shorts\/|\/embed\/|\/live\/)([\w-]{11})/.exec(String(url || ''));
+  return m ? m[1] : '';
+}
+const ytThumb = (id) => `https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
+
+// ---- Tonalidades ----
+const KEYS = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'F#', 'G', 'A♭', 'A', 'B♭', 'B'];
+
+// ---- Mosaico geométrico de la cabecera (como la referencia), dibujado una vez en SVG ----
+(function mosaic() {
+  const colors = ['#0b2a6b', '#12204a', '#1f6fd1', '#2a8fe0', '#36d1e6', '#ffffff', '#1b3c8f'];
+  let seed = 7;
+  const rnd = () => { seed = (seed * 9301 + 49297) % 233280; return seed / 233280; };
+  const t = 44, n = 4;
+  let s = '';
+  for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) {
+    const X = x * t, Y = y * t;
+    const bg = colors[Math.floor(rnd() * 4)];
+    const fg = colors[2 + Math.floor(rnd() * 5)];
+    s += `<rect x="${X}" y="${Y}" width="${t}" height="${t}" fill="${bg}"/>`;
+    const k = Math.floor(rnd() * 6);
+    if (k === 0) s += `<path d="M${X} ${Y}h${t}a${t} ${t} 0 0 1-${t} ${t}z" fill="${fg}"/>`;
+    else if (k === 1) s += `<circle cx="${X + t / 2}" cy="${Y + t / 2}" r="${t / 2.6}" fill="${fg}"/>`;
+    else if (k === 2) s += `<path d="M${X} ${Y + t}a${t / 2} ${t / 2} 0 0 1 ${t} 0z" fill="${fg}"/>`;
+    else if (k === 3) s += `<path d="M${X + t / 2} ${Y}L${X + t} ${Y + t / 2}L${X + t / 2} ${Y + t}L${X} ${Y + t / 2}z" fill="${fg}"/>`;
+    else if (k === 4) s += `<rect x="${X + 8}" y="${Y + 8}" width="${t - 16}" height="${t - 16}" rx="6" fill="${fg}"/><circle cx="${X + t / 2}" cy="${Y + t / 2}" r="6" fill="${bg}"/>`;
+    else s += `<path d="M${X + t} ${Y + t}V${Y}A${t} ${t} 0 0 0 ${X} ${Y + t}z" fill="${fg}"/>`;
+  }
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${t * n}" height="${t * n}" viewBox="0 0 ${t * n} ${t * n}">${s}</svg>`;
+  document.documentElement.style.setProperty('--mosaic', `url("data:image/svg+xml,${encodeURIComponent(svg)}")`);
+})();
+
+// ======================================================================================
+// Almacén de datos: Firebase (nube) o demostración (este teléfono). Misma interfaz.
+// ======================================================================================
+function demoBackend() {
+  const KEY = 'listas-demo-v1';
+  let db;
+  try { db = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { db = null; }
+  if (!db) {
+    const sun = nextSunday();
+    db = {
+      role: 'moderador',
+      members: { demo: { name: 'Tú (demo)', email: 'demo@ejemplo.com', role: 'moderador' }, m2: { name: 'María', email: 'maria@ejemplo.com', role: 'colaborador' }, m3: { name: 'Pedro', email: 'pedro@ejemplo.com', role: 'participante' } },
+      songs: {
+        s1: { title: 'Grande eres Jehová', author: 'Ministerios Ebenezer', key: 'G', youtube: '', text: '[Coro]\nGrande eres Jehová\nsobre toda la tierra', chart: '[Coro]\nG          D\nGrande eres Jehová\nEm        C\nsobre toda la tierra', status: 'agregado', by: 'demo', byName: 'Tú (demo)', at: Date.now(), seed: true },
+        s2: { title: 'A ti', author: 'Marcos Witt', key: 'D', youtube: '', text: '', chart: '', status: 'agregado', by: 'demo', byName: 'Tú (demo)', at: Date.now(), seed: true },
+        s3: { title: 'Cuán grande es Él', author: 'Tradicional', key: 'B♭', youtube: '', text: '', chart: '', status: 'sugerido', by: 'm2', byName: 'María', at: Date.now() },
+      },
+      services: { [sun]: { date: sun, title: 'Culto general', note: 'Entrar con el coro después de la oración.', status: 'revision', by: 'demo', byName: 'Tú (demo)', leader: 'm2', leaderName: 'María' } },
+      items: { [sun]: {
+        i1: { songId: 's1', order: 1, key: 'G', notes: 'Bienvenida, empieza solo piano.', by: 'demo', byName: 'Tú (demo)', at: Date.now() },
+        i2: { songId: 's2', order: 2, key: 'D', notes: '', by: 'm2', byName: 'María', at: Date.now() },
+      } },
+      comments: { [`${sun}/i1`]: { c1: { text: 'La batería entra en el segundo coro.', by: 'm2', byName: 'María', at: Date.now() - 3600e3 } } },
+      files: {},
+    };
+  }
+  db.notifs = db.notifs || {};
+  const subs = new Set();
+  // Un oyente de una pantalla vieja que falle no debe frenar a los demás.
+  const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { toast('El teléfono no tiene espacio para guardar más en la demostración'); } subs.forEach((f) => { try { f(); } catch (e) { console.warn(e); } }); };
+  const watch = (fn) => { const f = () => fn(); subs.add(f); f(); return () => subs.delete(f); };
+  const list = (obj) => Object.entries(obj || {}).map(([id, v]) => ({ id, ...v }));
+  let authCb = null;
+  // ---- Enlace con el Temporizador ----
+  // 'buscando' al empezar; 'ok' si respondió; 'off' si el puente existe pero el Temporizador está
+  // cerrado; 'none' si la app no se abrió desde servidor-prueba.js (no hay puente).
+  let tempo = null;
+  let tempoState = 'buscando';
+  let pulling = false;
+  const emit = () => subs.forEach((f) => { try { f(); } catch (e) { console.warn(e); } });
+  async function pullTempo() {
+    if (pulling || tempoState === 'none') return;
+    pulling = true;
+    try {
+      const r = await fetch('puente/cantos', { cache: 'no-store' });
+      if (r.status === 404) tempoState = 'none';
+      else if (!r.ok) tempoState = 'off';
+      else { const b = await r.json(); if (b.cargada !== false) { tempo = b.songs; tempoState = 'ok'; } }
+    } catch { tempoState = 'off'; }
+    pulling = false;
+    emit();
+  }
+  setInterval(() => { if (!document.hidden) pullTempo(); }, 15000);
+  addEventListener('visibilitychange', () => { if (!document.hidden) pullTempo(); });
+  async function pushTempo(id, song, isNew) {
+    let r;
+    try {
+      r = await fetch('puente/canto', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, title: song.title, author: song.author || '', text: song.text || '' }) });
+    } catch { throw new Error('No se pudo llegar a la PC del Temporizador'); }
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(b.error || 'El Temporizador no guardó el canto');
+    if (tempo) {
+      const t = { id: b.id || id, title: song.title, author: song.author || '', text: song.text || '' };
+      const i = tempo.findIndex((x) => x.id === t.id);
+      if (i >= 0) tempo[i] = t; else tempo.push(t);
+    }
+    setTimeout(pullTempo, 800);
+    return isNew ? b.id || id : id;
+  }
+  // Los del Temporizador (con lo propio del teléfono encima) + los sugeridos y los propios del
+  // teléfono. Con el Temporizador conectado se ocultan los cantos de ejemplo.
+  function mergedSongs() {
+    const out = [];
+    const seen = new Set();
+    for (const t of tempo || []) {
+      out.push({ ...(db.songs[t.id] || {}), ...t, status: 'agregado', shared: true, by: (db.songs[t.id] || {}).by || '' });
+      seen.add(t.id);
+    }
+    for (const [id, s] of Object.entries(db.songs)) {
+      if (seen.has(id)) continue;
+      if (tempo && (s.seed || (s.shared && s.status === 'agregado'))) continue; // borrado en el Temporizador o de ejemplo
+      out.push({ id, ...s });
+    }
+    return out.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+  }
+
+  // Marca la lista como cambiada (para ofrecer «Enviar cambios» si ya se había enviado).
+  const touch = (date) => { if (db.services[date]) db.services[date].changedAt = Date.now(); };
+  return {
+    demo: true,
+    onAuth(cb) { authCb = cb; setTimeout(() => cb({ uid: 'demo', email: 'demo@ejemplo.com' }), 0); },
+    async signIn() {}, async signUp() {}, async reset() {}, async signOut() { toast('En la demostración no se cierra sesión'); },
+    setDemoRole(role) { db.members.demo = { ...db.members.demo, role }; save(); },
+    // Copia: así se nota cuando cambia el rol (comparando antes y después).
+    watchMember(id, cb) { return watch(() => cb(db.members[id] ? { ...db.members[id] } : null)); },
+    async createMember(id, data) { db.members[id] = { ...data, role: 'moderador' }; save(); },
+    async hasOwner() { return true; },
+    async createUser(email, pass, data) { const id = uid8(); db.members[id] = { ...data, email }; save(); return id; },
+    async changePassword() { toast('En la demostración no hay contraseñas'); },
+    async updateMember(id, patch) { db.members[id] = { ...db.members[id], ...patch }; save(); },
+    async removeMember(id) { delete db.members[id]; save(); },
+    watchMembers(cb) { return watch(() => cb(list(db.members))); },
+    watchServices(cb) { return watch(() => cb(list(db.services).map((s) => ({ ...s, count: Object.keys(db.items[s.date] || {}).length })).sort((a, b) => a.date.localeCompare(b.date)))); },
+    async saveService(date, data) { db.services[date] = { ...(db.services[date] || {}), ...data, date }; save(); },
+    async deleteService(date) { delete db.services[date]; delete db.items[date]; save(); },
+    watchItems(date, cb) { return watch(() => cb(list(db.items[date]).sort((a, b) => a.order - b.order))); },
+    async addItem(date, item) { const id = uid8(); db.items[date] = { ...(db.items[date] || {}), [id]: { ...item, at: Date.now() } }; touch(date); save(); return id; },
+    async updateItem(date, id, patch) { db.items[date][id] = { ...db.items[date][id], ...patch }; touch(date); save(); },
+    async deleteItem(date, id) { delete db.items[date][id]; touch(date); save(); },
+    watchNotifications(cb) { return watch(() => cb(list(db.notifs).sort((a, b) => b.at - a.at).slice(0, 60))); },
+    async addNotification(n) { db.notifs[uid8()] = { ...n, at: Date.now() }; save(); },
+    watchComments(date, item, cb) { return watch(() => cb(list(db.comments[`${date}/${item}`]).sort((a, b) => a.at - b.at))); },
+    async addComment(date, item, c) { const k = `${date}/${item}`; db.comments[k] = { ...(db.comments[k] || {}), [uid8()]: { ...c, at: Date.now() } }; save(); },
+    async deleteComment(date, item, id) { delete db.comments[`${date}/${item}`][id]; save(); },
+    // Cantos agregados = biblioteca de Letras del Temporizador (por el puente de servidor-prueba.js).
+    // Lo propio del teléfono (tono, YouTube, chart) se guarda aquí, encima del canto del Temporizador.
+    watchSongs(cb) { pullTempo(); return watch(() => cb(mergedSongs())); },
+    tempoStatus: () => tempoState,
+    async addSong(song) {
+      let id = uid8();
+      if (song.status === 'agregado' && tempoState !== 'none') id = await pushTempo(id, song, true);
+      db.songs[id] = { ...song, at: Date.now(), shared: song.status === 'agregado' && tempoState === 'ok' };
+      save(); return id;
+    },
+    async updateSong(id, patch) {
+      const cur = mergedSongs().find((s) => s.id === id) || {};
+      const next = { ...cur, ...patch };
+      // Si es (o pasa a ser) un canto agregado, la letra también se guarda en el Temporizador.
+      if (next.status === 'agregado' && tempoState !== 'none' && ['title', 'author', 'text', 'status'].some((k) => k in patch)) await pushTempo(id, next, false);
+      db.songs[id] = { ...(db.songs[id] || cur), ...patch, shared: next.status === 'agregado' && (cur.shared || tempoState === 'ok') };
+      save();
+    },
+    async deleteSong(id) { delete db.songs[id]; delete db.files[id]; save(); },
+    watchFiles(song, cb) { return watch(() => cb(list(db.files[song]).map(({ data, ...meta }) => meta))); },
+    async addFile(song, meta, base64) {
+      if (base64.length > 1.5e6) throw new Error('En la demostración los archivos deben pesar menos de 1 MB');
+      db.files[song] = { ...(db.files[song] || {}), [uid8()]: { ...meta, data: base64, at: Date.now() } }; save();
+    },
+    async getFile(song, id) { return db.files[song][id].data; },
+    async deleteFile(song, id) { delete db.files[song][id]; save(); },
+  };
+}
+
+async function firebaseBackend() {
+  const v = '10.12.2';
+  const [{ initializeApp, deleteApp }, A, F] = await Promise.all([
+    import(`https://www.gstatic.com/firebasejs/${v}/firebase-app.js`),
+    import(`https://www.gstatic.com/firebasejs/${v}/firebase-auth.js`),
+    import(`https://www.gstatic.com/firebasejs/${v}/firebase-firestore.js`),
+  ]);
+  const app = initializeApp(FIREBASE_CONFIG);
+  const auth = A.getAuth(app);
+  const db = F.getFirestore(app);
+  const D = (...p) => F.doc(db, ...p);
+  const C = (...p) => F.collection(db, ...p);
+  const snapList = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const CHUNK = 700000; // los archivos se guardan en trozos (Firestore admite 1 MB por documento)
+  const touch = (date) => F.updateDoc(D('services', date), { changedAt: Date.now() }).catch(() => {});
+  return {
+    demo: false,
+    onAuth(cb) { A.onAuthStateChanged(auth, (u) => cb(u ? { uid: u.uid, email: u.email } : null)); },
+    signIn: (e, p) => A.signInWithEmailAndPassword(auth, e, p),
+    signUp: (e, p) => A.createUserWithEmailAndPassword(auth, e, p),
+    reset: (e) => A.sendPasswordResetEmail(auth, e),
+    signOut: () => A.signOut(auth),
+    watchMember: (id, cb) => F.onSnapshot(D('members', id), (s) => cb(s.exists() ? s.data() : null), () => cb(null)),
+    // Solo la primera cuenta se crea desde la pantalla de entrada: queda como moderador (dueño).
+    // Todas las demás las crea un moderador desde «Equipo».
+    async createMember(id, data) {
+      const owner = await F.getDoc(D('config', 'owner'));
+      if (owner.exists()) throw new Error('Las cuentas las crea un moderador');
+      const batch = F.writeBatch(db);
+      batch.set(D('config', 'owner'), { uid: id });
+      batch.set(D('members', id), { ...data, role: 'moderador' });
+      await batch.commit();
+    },
+    hasOwner: async () => { try { return (await F.getDoc(D('config', 'owner'))).exists(); } catch { return true; } },
+    // El moderador crea la cuenta de otra persona con una segunda conexión, para no cerrar su
+    // propia sesión; luego guarda su nombre y su rol.
+    async createUser(email, pass, data) {
+      const sec = initializeApp(FIREBASE_CONFIG, 'alta-' + Date.now());
+      try {
+        const sa = A.getAuth(sec);
+        await A.setPersistence(sa, A.inMemoryPersistence);
+        const cred = await A.createUserWithEmailAndPassword(sa, email, pass);
+        await F.setDoc(D('members', cred.user.uid), { ...data, email });
+        await A.signOut(sa);
+        return cred.user.uid;
+      } finally { deleteApp(sec).catch(() => {}); }
+    },
+    changePassword: (p) => A.updatePassword(auth.currentUser, p),
+    updateMember: (id, patch) => F.updateDoc(D('members', id), patch),
+    removeMember: (id) => F.deleteDoc(D('members', id)),
+    watchMembers: (cb) => F.onSnapshot(C('members'), (s) => cb(snapList(s))),
+    watchServices(cb) {
+      const since = keyOf(new Date(Date.now() - 14 * 864e5));
+      return F.onSnapshot(F.query(C('services'), F.where('date', '>=', since), F.orderBy('date')), (s) => cb(snapList(s)));
+    },
+    saveService: (date, data) => F.setDoc(D('services', date), { ...data, date, updatedAt: Date.now() }, { merge: true }),
+    async deleteService(date) {
+      const items = await F.getDocs(C('services', date, 'items'));
+      await Promise.all(items.docs.map((d) => F.deleteDoc(d.ref)));
+      await F.deleteDoc(D('services', date));
+    },
+    watchItems: (date, cb) => F.onSnapshot(F.query(C('services', date, 'items'), F.orderBy('order')), (s) => cb(snapList(s))),
+    addItem: async (date, item) => { const r = await F.addDoc(C('services', date, 'items'), { ...item, at: Date.now() }); touch(date); return r.id; },
+    updateItem: async (date, id, patch) => { await F.updateDoc(D('services', date, 'items', id), patch); touch(date); },
+    deleteItem: async (date, id) => { await F.deleteDoc(D('services', date, 'items', id)); touch(date); },
+    watchNotifications: (cb) => F.onSnapshot(F.query(C('notifications'), F.orderBy('at', 'desc'), F.limit(60)), (s) => cb(snapList(s)), () => cb([])),
+    addNotification: (n) => F.addDoc(C('notifications'), { ...n, at: Date.now() }),
+    watchComments: (date, item, cb) => F.onSnapshot(F.query(C('services', date, 'items', item, 'comments'), F.orderBy('at')), (s) => cb(snapList(s))),
+    addComment: (date, item, c) => F.addDoc(C('services', date, 'items', item, 'comments'), { ...c, at: Date.now() }),
+    deleteComment: (date, item, id) => F.deleteDoc(D('services', date, 'items', item, 'comments', id)),
+    watchSongs: (cb) => F.onSnapshot(F.query(C('songs'), F.orderBy('title')), (s) => cb(snapList(s))),
+    addSong: async (song) => (await F.addDoc(C('songs'), { ...song, at: Date.now() })).id,
+    updateSong: (id, patch) => F.updateDoc(D('songs', id), patch),
+    deleteSong: (id) => F.deleteDoc(D('songs', id)),
+    watchFiles: (song, cb) => F.onSnapshot(C('songs', song, 'files'), (s) => cb(snapList(s))),
+    async addFile(song, meta, base64) {
+      const ref = await F.addDoc(C('songs', song, 'files'), { ...meta, chunks: Math.ceil(base64.length / CHUNK), at: Date.now() });
+      for (let i = 0, n = 0; i < base64.length; i += CHUNK, n++) await F.setDoc(D('songs', song, 'files', ref.id, 'chunks', String(n)), { data: base64.slice(i, i + CHUNK) });
+    },
+    async getFile(song, id) {
+      const snap = await F.getDocs(C('songs', song, 'files', id, 'chunks'));
+      return snap.docs.sort((a, b) => Number(a.id) - Number(b.id)).map((d) => d.data().data).join('');
+    },
+    async deleteFile(song, id) {
+      const snap = await F.getDocs(C('songs', song, 'files', id, 'chunks'));
+      await Promise.all(snap.docs.map((d) => F.deleteDoc(d.ref)));
+      await F.deleteDoc(D('songs', song, 'files', id));
+    },
+  };
+}
+
+// ======================================================================================
+// Estado y navegación
+// ======================================================================================
+let api = null;
+let user = null; // { uid, email }
+let me = null;   // { name, role }
+let services = [];
+let servicesLoaded = false;
+let allMembers = {}; // id → ficha (para fotos y nombres)
+let songs = [];
+let viewSubs = [];
+// Roles: moderador (acceso total), colaborador (hace sus listas y sugiere cantos) y
+// participante (solo ve las listas y comenta). «pendiente» espera aprobación.
+const ROLES = { moderador: 'Moderador', colaborador: 'Colaborador', participante: 'Participante', pendiente: 'Pendiente' };
+const isMod = () => me && me.role === 'moderador';
+const canCreate = () => me && (me.role === 'moderador' || me.role === 'colaborador');
+const isMember = () => me && (me.role === 'moderador' || me.role === 'colaborador' || me.role === 'participante');
+const songById = (id) => songs.find((s) => s.id === id);
+// Foto de perfil (si la puso) o sus iniciales.
+const face = (m) => (m && m.photo ? `<img src="${esc(m.photo)}" alt="">` : esc(initials(m && m.name)));
+const initials = (n) => String(n || '?').replace(/[^\p{L}\s]/gu, ' ').trim().split(/\s+/).filter(Boolean).map((w) => w[0]).slice(0, 2).join('').toUpperCase() || '?';
+const clearView = () => { viewSubs.forEach((u) => { try { u(); } catch { /* ya cerrado */ } }); viewSubs = []; };
+const go = (hash) => { if (location.hash !== hash) location.hash = hash; else { tabNav = false; backNav = false; route(); } };
+addEventListener('hashchange', () => { trackNav(); route(); });
+
+// Cabecera: «‹» vuelve a la pantalla anterior (siempre a una pantalla concreta, no al historial
+// del navegador). La navegación está en la barra de abajo.
+function hero({ title = '', back = '', tall = false } = {}) {
+  return `<div class="hero${tall ? ' tall' : ''}"><div class="tools">` +
+    (back ? `<button class="round" data-go="${back}" aria-label="Atrás">‹</button>` : '<span class="round ghost"></span>') +
+    '<button class="pill-logo" data-go="#/" aria-label="Inicio">LIS<span>T</span>AS</button>' +
+    (user && me && isMember() ? `<button class="round bell${unread() ? ' has' : ''}" data-go="#/avisos" aria-label="Avisos">${bellInner()}</button>` : '<span class="round ghost"></span>') + '</div>' +
+    (title ? `<h1>${esc(title)}</h1>` : '') + '</div>';
+}
+
+// ---- Avisos: cuando envían una lista, comentan tu lista, sugieren un canto o alguien pide entrar ----
+let notifs = [];
+let notifsReady = false;
+const SEEN_KEY = 'listas-avisos-visto';
+const seenAt = () => { try { return Number(localStorage.getItem(SEEN_KEY) || 0); } catch { return 0; } };
+const forMe = (n) => (n.to === user.uid || (n.to === 'moderadores' && isMod())) && (api.demo || n.from !== user.uid);
+const myNotifs = () => (user ? notifs.filter(forMe) : []);
+const unread = () => myNotifs().filter((n) => n.at > seenAt()).length;
+const bellBadge = () => { const n = unread(); return n ? `<b>${n > 9 ? '9+' : n}</b>` : ''; };
+const bellInner = () => `<span class="bi">🔔</span>${bellBadge()}`;
+// La campana se mece mientras haya avisos sin ver; con uno nuevo, suena fuerte y lanza una onda.
+let bellLast = -1;
+function updateBell(ring) {
+  const n = unread();
+  document.querySelectorAll('.bell').forEach((b) => {
+    if (n !== bellLast || !b.querySelector('.bi')) b.innerHTML = bellInner();
+    b.classList.toggle('has', n > 0);
+    if (ring && !reducedMotion()) { b.classList.remove('ring'); void b.offsetWidth; b.classList.add('ring'); }
+  });
+  bellLast = n;
+}
+const NOTIF_IC = { lista: '📋', comentario: '💬', canto: '♫', equipo: '👤' };
+function notify(to, data) {
+  return Promise.resolve(api.addNotification({ to, ...data, from: user.uid, fromName: (me && me.name) || '' })).catch(() => {});
+}
+function onNotifs(list) {
+  const before = new Set(notifs.map((n) => n.id));
+  notifs = list;
+  const fresh = notifsReady ? list.filter((n) => !before.has(n.id) && forMe(n) && n.at > seenAt()) : [];
+  notifsReady = true;
+  if (location.hash === '#/avisos') { renderNotifs(); try { localStorage.setItem(SEEN_KEY, String(Date.now())); } catch { /* sin almacenamiento */ } }
+  updateBell(fresh.length > 0);
+  if (fresh.length) haptic([20, 60, 20]);
+  fresh.slice(0, 3).forEach((n) => {
+    toast(`${NOTIF_IC[n.kind] || '🔔'} ${n.text}`);
+    systemNotify(n);
+  });
+}
+// Aviso del sistema (la barra de notificaciones del teléfono) mientras la app está abierta.
+async function systemNotify(n) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  const opts = { body: n.text, icon: 'icon-192.png', tag: n.id, data: { link: n.link || '#/avisos' } };
+  try {
+    const reg = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
+    if (reg) { reg.showNotification('Listas de alabanza', opts); return; }
+    new Notification('Listas de alabanza', opts);
+  } catch { /* este navegador no deja mostrar avisos aquí */ }
+}
+function viewNotifs() {
+  $('view').innerHTML = `${hero({ title: 'Avisos', back: '#/' })}<div class="sheetbody">
+    <div id="ntPerm"></div><div id="ntList"></div></div>`;
+  // Lo nuevo se resalta mientras estás aquí, pero el número de la 🔔 se borra al entrar.
+  shownSeen = seenAt();
+  renderNotifs();
+  try { localStorage.setItem(SEEN_KEY, String(Date.now())); } catch { /* sin almacenamiento */ }
+  updateBell();
+  const perm = () => {
+    const box = $('ntPerm');
+    if (!box) return;
+    const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+    const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+    if (!('Notification' in window)) {
+      box.innerHTML = `<div class="hint" style="margin-bottom:12px">${ios && !standalone ? 'Para recibir avisos en el iPhone, primero <b>instala la app</b> (Compartir › «Agregar a inicio») y ábrela desde su ícono.' : 'Este navegador no muestra avisos del sistema; los verás aquí y en la 🔔.'}</div>`;
+    } else if (Notification.permission === 'default') {
+      box.innerHTML = '<button class="btn" id="ntAsk" style="margin-bottom:12px">🔔 Activar avisos en este teléfono</button>';
+      $('ntAsk').onclick = async () => { await Notification.requestPermission(); perm(); if (Notification.permission === 'granted') toast('✓ Avisos activados'); };
+    } else if (Notification.permission === 'denied') {
+      box.innerHTML = '<div class="hint" style="margin-bottom:12px">Los avisos están bloqueados para esta app. Actívalos en los ajustes del navegador.</div>';
+    } else box.innerHTML = '';
+  };
+  perm();
+  // Al salir de la pantalla, todo lo que se vio queda como leído.
+  viewSubs.push(() => { try { localStorage.setItem(SEEN_KEY, String(Date.now())); } catch { /* sin almacenamiento */ } updateBell(); });
+}
+let shownSeen = 0;
+function renderNotifs() {
+  const box = $('ntList');
+  if (!box) return;
+  const seen = shownSeen;
+  const list = myNotifs();
+  box.innerHTML = list.map((n) => `<button class="notif${n.at > seen ? ' new' : ''}" data-go="${esc(n.link || '#/avisos')}"><span class="ic">${NOTIF_IC[n.kind] || '🔔'}</span><span class="t"><b>${esc(n.text)}</b><small>${new Date(n.at).toLocaleString('es', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></span></button>`).join('')
+    || `<div class="empty">Sin avisos todavía.<br>${isMod() ? 'Aquí te llegará cuando alguien envíe su lista.' : 'Aquí verás cuando comenten tu lista.'}</div>`;
+}
+document.addEventListener('click', (e) => {
+  const g = e.target.closest('[data-go]');
+  if (!g) return;
+  if (g.matches('.hero .round[data-go]')) backNav = true;
+  closeSheet();
+  go(g.dataset.go);
+});
+
+// ---- Barra de abajo: Nueva lista, Cantos, Equipo y Más ----
+function renderTabbar() {
+  const show = !!(user && me && isMember());
+  $('tabbar').hidden = !show;
+  if (!show) return;
+  const h = location.hash.replace(/^#/, '') || '/';
+  // Primera pestaña: Inicio (las fechas; desde ahí se crea o se continúa la lista).
+  const on = h === '/' || h === '/nueva' || h.startsWith('/s/') ? 'inicio' : h === '/cantos' ? 'cantos' : h === '/equipo' ? 'equipo' : h === '/cuenta' ? 'mas' : '';
+  $('tabbar').querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === on));
+}
+// La lista que estoy armando (la más próxima que aún no envío).
+const myDraft = () => (user && canCreate() ? services.find((s) => s.by === user.uid && !sent(s) && s.date >= today()) : null);
+$('tabbar').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-tab]');
+  if (!b) return;
+  closeSheet();
+  haptic(6);
+  b.querySelector('i').classList.remove('bounce'); void b.offsetWidth; b.querySelector('i').classList.add('bounce');
+  if (b.dataset.tab !== 'mas') tabNav = true;
+  if (b.dataset.tab === 'inicio') go('#/');
+  if (b.dataset.tab === 'cantos') go('#/cantos');
+  if (b.dataset.tab === 'equipo') go('#/equipo');
+  if (b.dataset.tab === 'mas') openMore();
+});
+function openMore() {
+  const t = theme();
+  openSheet(`<h2>Más</h2>
+    <button class="date-row" data-go="#/"><span class="d" style="font-size:20px">⌂</span><span class="t"><b>Inicio</b><small>Las fechas de las listas</small></span></button>
+    <button class="date-row" data-go="#/cuenta"><span class="d" style="font-size:20px">☺</span><span class="t"><b>Mi cuenta</b><small>Tu nombre e instalar la app</small></span></button>
+    <button class="date-row" id="mrDark" role="switch" aria-checked="${isDark()}"><span class="d" style="font-size:20px">☾</span><span class="t"><b>Modo oscuro</b><small>Tócalo para cambiar</small></span><span class="switch${isDark() ? ' on' : ''}"><i></i></span></button>
+    <label class="l">Apariencia</label>
+    <div class="tabs" id="mrTheme">${[['auto', 'Automático'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([k, n]) => `<button data-th="${k}" class="${t === k ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <button class="btn ghost" id="mrClose">Cerrar</button>`, () => {
+    $('mrClose').onclick = () => closeSheet();
+    $('mrDark').onclick = (e) => {
+      const next = isDark() ? 'claro' : 'oscuro';
+      $('mrDark').querySelector('.switch').classList.toggle('on', next === 'oscuro');
+      $('mrDark').setAttribute('aria-checked', String(next === 'oscuro'));
+      $('mrTheme').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.th === next));
+      haptic();
+      // El interruptor termina de moverse y entonces se abre el nuevo tema.
+      setTimeout(() => setTheme(next, e), 180);
+    };
+    $('mrTheme').onclick = (e) => { const b = e.target.closest('[data-th]'); if (!b) return; setTheme(b.dataset.th, e); $('mrTheme').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); setTimeout(() => { if ($('mrDark')) $('mrDark').querySelector('.switch').classList.toggle('on', isDark()); }, 30); };
+  });
+}
+
+// ---- Tema claro / oscuro ----
+const theme = () => { try { return localStorage.getItem('listas-tema') || 'auto'; } catch { return 'auto'; } };
+const isDark = () => document.documentElement.dataset.theme === 'dark';
+function applyTheme() {
+  const t = theme();
+  const dark = t === 'oscuro' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+  document.querySelector('meta[name=theme-color]').setAttribute('content', dark ? '#060a16' : '#0b2a6b');
+}
+// Cambio de tema con animación: un círculo que se abre desde el botón tocado.
+function setTheme(t, ev) {
+  try { localStorage.setItem('listas-tema', t); } catch { /* sin almacenamiento */ }
+  const root = document.documentElement;
+  if (ev && ev.clientX != null) { root.style.setProperty('--tx', ev.clientX + 'px'); root.style.setProperty('--ty', ev.clientY + 'px'); }
+  const wasDark = isDark();
+  const willDark = t === 'oscuro' || (t === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  if (wasDark === willDark) { applyTheme(); return; }
+  if (document.startViewTransition && !matchMedia('(prefers-reduced-motion: reduce)').matches) { document.startViewTransition(applyTheme); return; }
+  root.classList.add('theming');
+  applyTheme();
+  setTimeout(() => root.classList.remove('theming'), 1000);
+}
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
+applyTheme();
+
+function route() {
+  clearView();
+  closeSheet();
+  $('view').onclick = null;
+  $('view').onchange = null;
+  $('view').onkeydown = null;
+  renderTabbar();
+  scrollTo(0, 0);
+  renderRoute();
+  animateView();
+  // La bienvenida se va cuando ya hay algo que mostrar (en Inicio, cuando llegaron las listas).
+  if (!user || !me || !isMember() || servicesLoaded) hideSplash();
+}
+function renderRoute() {
+  if (!user) return viewLogin();
+  if (!me) return viewName();
+  if (!isMember()) return viewPending();
+  const h = location.hash.replace(/^#/, '') || '/';
+  const pk = /^\/s\/(\d{4}-\d{2}-\d{2})\/cantos$/.exec(h);
+  if (pk) return viewPicker(pk[1]);
+  const m = /^\/s\/(\d{4}-\d{2}-\d{2})(?:\/(\w+))?$/.exec(h);
+  if (m) return viewService(m[1], m[2]);
+  if (h === '/nueva') return canCreate() ? viewNew() : viewHome();
+  if (h === '/avisos') return viewNotifs();
+  if (h === '/cantos') return viewSongs();
+  if (h === '/equipo') return viewTeam();
+  if (h === '/cuenta') return viewAccount();
+  return viewHome();
+}
+// Quién puede cambiar la lista de una fecha: el moderador, o quien la creó mientras no esté cerrada.
+const canEditList = (s) => isMod() || (!!s && canCreate() && s.by === user.uid);
+
+// ======================================================================================
+// Hojas (paneles que suben desde abajo)
+// ======================================================================================
+let sheetSubs = [];
+let sheetToken = 0;
+const runSheetSubs = () => { sheetSubs.forEach((f) => { try { f(); } catch { /* ya cerrado */ } }); sheetSubs = []; };
+function openSheet(html, onReady) {
+  sheetToken++;
+  runSheetSubs();
+  const bg = $('sheetBg'), sh = $('sheet');
+  bg.classList.remove('closing');
+  sh.style.transform = ''; sh.style.transition = ''; bg.style.opacity = '';
+  sh.innerHTML = '<div class="grab"></div>' + html;
+  sh.scrollTop = 0;
+  bg.classList.add('open');
+  if (onReady) onReady(sh);
+}
+// Se cierra deslizándose hacia abajo (o al instante, si se pide).
+function closeSheet(instant) {
+  const bg = $('sheetBg'), sh = $('sheet');
+  runSheetSubs();
+  if (!bg.classList.contains('open')) return;
+  const tk = ++sheetToken;
+  const done = () => { if (tk !== sheetToken) return; bg.classList.remove('open', 'closing'); sh.innerHTML = ''; sh.style.transform = ''; sh.style.transition = ''; bg.style.opacity = ''; };
+  if (instant === true || reducedMotion()) { done(); return; }
+  bg.classList.add('closing');
+  setTimeout(done, 280);
+}
+$('sheetBg').addEventListener('click', (e) => { if (e.target === $('sheetBg')) closeSheet(); });
+
+// ======================================================================================
+// Movimiento: carga, transiciones, gestos y microinteracciones
+// ======================================================================================
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const haptic = (ms = 8) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch { /* sin vibración */ } };
+// Botón «cargando»: muestra un círculo girando mientras termina la tarea.
+function busy(btn, promise) {
+  if (btn) { btn.classList.add('loading'); btn.disabled = true; }
+  return Promise.resolve(promise).finally(() => { if (btn) { btn.classList.remove('loading'); btn.disabled = false; } });
+}
+// Sacudida (por ejemplo, contraseña incorrecta o campo vacío).
+function shake(el) {
+  if (!el) return;
+  el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake');
+  haptic(30);
+}
+// Onda al tocar los botones principales.
+document.addEventListener('pointerdown', (e) => {
+  const b = e.target.closest('.btn, .get, .send button, .date-row, .notif, .ticket .bottom button, .pick, .member.tap');
+  if (!b || b.disabled || reducedMotion()) return;
+  const r = b.getBoundingClientRect();
+  const d = Math.max(r.width, r.height) * 2;
+  const s = document.createElement('span');
+  s.className = 'ripple';
+  s.style.cssText = `width:${d}px;height:${d}px;left:${e.clientX - r.left - d / 2}px;top:${e.clientY - r.top - d / 2}px`;
+  b.appendChild(s);
+  setTimeout(() => s.remove(), 650);
+}, { passive: true });
+
+// Pestañas (Automático/Claro/Oscuro, Agregados/Sugeridos…): una píldora que se desliza a la elegida.
+function placeTabs(tabs, animate = true) {
+  let ind = tabs.querySelector(':scope > .ind');
+  if (!ind) { ind = document.createElement('i'); ind.className = 'ind'; tabs.prepend(ind); tabs.classList.add('has-ind'); animate = false; }
+  const on = tabs.querySelector(':scope > button.on');
+  if (!on) { ind.style.opacity = '0'; return; }
+  ind.style.transition = animate ? '' : 'none';
+  ind.style.opacity = '1';
+  ind.style.width = on.offsetWidth + 'px';
+  ind.style.transform = `translateX(${on.offsetLeft - 4}px)`;
+  if (!animate) { void ind.offsetWidth; ind.style.transition = ''; }
+}
+new MutationObserver((muts) => {
+  const seen = new Set();
+  muts.forEach((m) => {
+    const el = m.target.nodeType === 1 ? m.target : null;
+    if (!el) return;
+    if (m.type === 'attributes') { const t = el.parentElement && el.parentElement.closest('.tabs'); if (t) seen.add(t); return; }
+    el.querySelectorAll('.tabs').forEach((t) => seen.add(t));
+    if (el.classList.contains('tabs')) seen.add(el);
+  });
+  seen.forEach((t) => requestAnimationFrame(() => placeTabs(t)));
+}).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+addEventListener('resize', () => document.querySelectorAll('.tabs.has-ind').forEach((t) => placeTabs(t, false)));
+
+// ---- Transiciones de navegación ----
+// Adelante: la pantalla entra desde la derecha; atrás: desde la izquierda; pestañas: sube suave.
+let navStack = [location.hash || '#/'];
+let pendingNav = null;
+let tabNav = false;
+function trackNav() {
+  const h = location.hash || '#/';
+  if (tabNav) { pendingNav = 'tab'; navStack = [h]; tabNav = false; return; }
+  if (navStack.length > 1 && navStack[navStack.length - 2] === h) { navStack.pop(); pendingNav = 'back'; }
+  else if (backNav) { pendingNav = 'back'; navStack.pop(); navStack[navStack.length - 1] = h; }
+  else { navStack.push(h); if (navStack.length > 30) navStack.shift(); pendingNav = 'fwd'; }
+  backNav = false;
+}
+let backNav = false;
+function animateView() {
+  const v = $('view');
+  const kind = pendingNav;
+  pendingNav = null;
+  v.classList.remove('nav-fwd', 'nav-back', 'nav-tab');
+  if (!kind || reducedMotion()) return;
+  void v.offsetWidth;
+  v.classList.add('nav-' + kind);
+  clearTimeout(animateView.t);
+  animateView.t = setTimeout(() => v.classList.remove('nav-' + kind), 900);
+}
+
+// ---- Gesto: deslizar desde el borde izquierdo para volver ----
+(function edgeSwipe() {
+  let sx = 0, sy = 0, dx = 0, on = false, decided = false, target = '', t0 = 0;
+  const parts = () => [...$('view').children];
+  const hint = document.createElement('div');
+  hint.className = 'edge-hint';
+  hint.textContent = '‹';
+  document.body.appendChild(hint);
+  addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1 || $('sheetBg').classList.contains('open')) return;
+    const t = e.touches[0];
+    if (t.clientX > 28) return;
+    const back = $('view').querySelector('.hero .tools .round[data-go]');
+    if (!back) return;
+    target = back.dataset.go; sx = t.clientX; sy = t.clientY; dx = 0; on = true; decided = false; t0 = Date.now();
+  }, { passive: true });
+  addEventListener('touchmove', (e) => {
+    if (!on) return;
+    const t = e.touches[0];
+    dx = Math.max(0, t.clientX - sx);
+    if (!decided) {
+      if (Math.abs(t.clientY - sy) > 14 && Math.abs(t.clientY - sy) > dx) { on = false; return; }
+      if (dx < 8) return;
+      decided = true;
+    }
+    e.preventDefault();
+    const k = Math.min(1, dx / innerWidth);
+    parts().forEach((p) => { p.style.transition = 'none'; p.style.transform = `translateX(${dx}px)`; });
+    $('view').style.setProperty('--edge', k);
+    hint.style.opacity = Math.min(1, dx / 90);
+    hint.style.transform = `translate(${Math.min(dx, 90) - 50}px, -50%) scale(${0.6 + Math.min(1, dx / 120) * 0.4})`;
+  }, { passive: false });
+  addEventListener('touchend', () => {
+    if (!on) return;
+    on = false;
+    const fast = dx > 40 && dx / Math.max(1, Date.now() - t0) > 0.5;
+    const ok = decided && (dx > innerWidth * 0.33 || fast);
+    hint.style.opacity = 0; hint.style.transform = '';
+    parts().forEach((p) => { p.style.transition = 'transform .28s cubic-bezier(.2,.8,.2,1)'; p.style.transform = ok ? `translateX(${innerWidth}px)` : ''; });
+    if (ok) { haptic(); setTimeout(() => { backNav = true; go(target); }, 200); }
+    else setTimeout(() => parts().forEach((p) => { p.style.transition = ''; }), 300);
+  });
+}());
+
+// ---- Gesto: arrastrar una hoja hacia abajo para cerrarla ----
+(function sheetDrag() {
+  const sh = $('sheet'), bg = $('sheetBg');
+  let sy = 0, dy = 0, on = false, t0 = 0, dragging = false;
+  sh.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) return;
+    const fromGrab = e.target.closest('.grab');
+    if (!fromGrab && sh.scrollTop > 0) return;
+    if (e.target.closest('input, textarea, select, .keys, .chart, .video')) return;
+    sy = e.touches[0].clientY; dy = 0; on = true; dragging = false; t0 = Date.now();
+  }, { passive: true });
+  sh.addEventListener('touchmove', (e) => {
+    if (!on) return;
+    dy = e.touches[0].clientY - sy;
+    if (dy <= 0 && !dragging) { on = false; return; }
+    dragging = true;
+    e.preventDefault();
+    const d = Math.max(0, dy);
+    sh.style.transition = 'none';
+    sh.style.transform = `translateY(${d}px)`;
+    bg.style.opacity = String(Math.max(0.3, 1 - d / 500));
+  }, { passive: false });
+  sh.addEventListener('touchend', () => {
+    if (!on) return;
+    on = false;
+    if (!dragging) return;
+    const fast = dy > 30 && dy / Math.max(1, Date.now() - t0) > 0.6;
+    sh.style.transition = 'transform .28s cubic-bezier(.2,.8,.2,1)';
+    bg.style.transition = 'opacity .28s';
+    if (dy > 120 || fast) {
+      sh.style.transform = 'translateY(105%)'; bg.style.opacity = '0';
+      haptic();
+      setTimeout(() => { closeSheet(true); bg.style.transition = ''; }, 260);
+    } else { sh.style.transform = ''; bg.style.opacity = ''; setTimeout(() => { bg.style.transition = ''; }, 300); }
+  });
+}());
+
+// ---- Celebración: palomita que se dibuja y confeti (al enviar una lista o crear un usuario) ----
+function celebrate(text) {
+  haptic([12, 40, 18]);
+  if (reducedMotion()) { toast('✓ ' + text); return; }
+  const el = document.createElement('div');
+  el.className = 'celebrate';
+  const colors = ['#36d1e6', '#1f6fd1', '#17b26a', '#f0b400', '#7a5cff', '#ffffff'];
+  const bits = Array.from({ length: 18 }, (_, i) => {
+    const a = (i / 18) * Math.PI * 2, r = 90 + Math.random() * 60;
+    return `<i style="--x:${Math.cos(a) * r}px;--y:${Math.sin(a) * r}px;--c:${colors[i % colors.length]};--d:${Math.random() * 0.12}s"></i>`;
+  }).join('');
+  el.innerHTML = `<div class="cel-in"><div class="cel-burst">${bits}</div><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="34"/><path d="M24 41l11 11 22-24"/></svg><b>${esc(text)}</b></div>`;
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('out'), 1250);
+  setTimeout(() => el.remove(), 1700);
+}
+
+// ---- Pantalla de bienvenida (splash) ----
+const splashT0 = Date.now();
+function hideSplash() {
+  const sp = $('splash');
+  if (!sp || sp.classList.contains('out')) return;
+  const left = Math.max(0, 1300 - (Date.now() - splashT0));
+  setTimeout(() => { sp.classList.add('out'); setTimeout(() => sp.remove(), 700); }, left);
+}
+setTimeout(hideSplash, 7000); // por si la red tarda: no se queda la bienvenida para siempre
+
+// ======================================================================================
+// Entrar
+// ======================================================================================
+function viewLogin() {
+  $('view').innerHTML = `<div class="login-wrap">${hero({ title: 'Bienvenido', tall: true })}<div class="sheetbody">
+    <p class="hello">Listas de alabanza</p><h2 class="big">Entra con tu correo</h2>
+    <input id="lgEmail" type="email" autocomplete="email" placeholder="tu@correo.com">
+    <input id="lgPass" type="password" autocomplete="current-password" placeholder="Contraseña (mínimo 6)">
+    <div class="err" id="lgErr"></div>
+    <button class="btn" id="lgIn">Entrar</button>
+    <button class="link center" id="lgReset">Olvidé mi contraseña</button>
+    <div class="hint">🔒 Las cuentas las crea un <b>moderador</b>. Pídele tu correo y tu contraseña. Al entrar, la app recuerda tu sesión.</div>
+    <div id="lgFirst"></div>
+  </div></div>`;
+  const err = (e) => { shake($('lgIn')); $('lgErr').textContent = authError(e); };
+  const vals = () => [$('lgEmail').value.trim(), $('lgPass').value];
+  $('lgIn').onclick = () => busy($('lgIn'), api.signIn(...vals())).catch(err);
+  $('lgPass').onkeydown = (e) => { if (e.key === 'Enter') $('lgIn').click(); };
+  // Solo la primera vez (nube vacía): crear la cuenta del moderador principal.
+  api.hasOwner().then((has) => {
+    if (has || !$('lgFirst')) return;
+    $('lgFirst').innerHTML = '<div class="hint"><b>Primera vez</b>: escribe arriba tu correo y una contraseña para crear la cuenta del <b>moderador principal</b>.<button class="btn ghost" id="lgUp" style="margin-top:10px">Crear cuenta de moderador</button></div>';
+    $('lgUp').onclick = () => busy($('lgUp'), api.signUp(...vals())).catch(err);
+  });
+  $('lgReset').onclick = () => { const e = $('lgEmail').value.trim(); if (!e) { $('lgErr').textContent = 'Escribe tu correo arriba'; return; } api.reset(e).then(() => toast('Te enviamos un correo para cambiar la contraseña')).catch(err); };
+}
+const AUTH_ERR = { 'auth/invalid-credential': 'Correo o contraseña incorrectos', 'auth/wrong-password': 'Correo o contraseña incorrectos', 'auth/user-not-found': 'Correo o contraseña incorrectos', 'auth/email-already-in-use': 'Ese correo ya tiene una cuenta', 'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres', 'auth/invalid-email': 'Ese correo no es válido', 'auth/too-many-requests': 'Demasiados intentos: espera un momento', 'auth/requires-recent-login': 'Por seguridad, sal y vuelve a entrar para cambiar la contraseña', 'auth/network-request-failed': 'Sin conexión a internet', 'auth/operation-not-allowed': 'Falta activar «Correo electrónico/contraseña» en Firebase › Authentication', 'auth/unauthorized-domain': 'Esta dirección no está autorizada en Firebase › Authentication › Dominios autorizados', 'permission-denied': 'La nube no dejó guardar: revisa que las reglas estén publicadas' };
+const authError = (e) => AUTH_ERR[e && e.code] || (e && e.message) || 'Algo salió mal';
+
+// Con sesión iniciada pero sin ficha en el equipo: o es la primera cuenta (moderador principal)
+// o es una cuenta a la que un moderador le quitó el acceso.
+function viewName() {
+  $('view').innerHTML = `<div class="login-wrap">${hero({ title: 'Un momento', tall: true })}<div class="sheetbody"><div class="spinner big-spin"></div></div></div>`;
+  api.hasOwner().then((has) => {
+    if (me || !user) return;
+    if (has) {
+      $('view').innerHTML = `<div class="login-wrap">${hero({ title: 'Sin acceso', tall: true })}<div class="sheetbody">
+        <h2 class="big">Esta cuenta no tiene acceso</h2><p class="muted">${esc(user.email || '')}<br>Pide a un moderador que te cree una cuenta o que te devuelva el acceso.</p>
+        <button class="btn ghost" id="nmOut">Salir</button></div></div>`;
+      $('nmOut').onclick = () => api.signOut();
+      return;
+    }
+    $('view').innerHTML = `<div class="login-wrap">${hero({ title: 'Moderador principal', tall: true })}<div class="sheetbody">
+      <h2 class="big">¿Cómo te llamas?</h2><p class="muted">Serás el <b>moderador principal</b>. Después creas las cuentas del equipo desde «Equipo».</p>
+      <input id="nmName" maxlength="40" placeholder="Tu nombre">
+      <input id="nmRole" maxlength="40" placeholder="Qué haces (ej. guitarra, voz, batería)">
+      <button class="btn" id="nmOk">Continuar</button></div></div>`;
+    $('nmOk').onclick = async () => {
+      const name = $('nmName').value.trim();
+      if (!name) { shake($('nmName')); toast('Escribe tu nombre'); return; }
+      await busy($('nmOk'), api.createMember(user.uid, { name, instrument: $('nmRole').value.trim(), email: user.email || '' })).catch((e) => toast(authError(e)));
+    };
+  });
+}
+function viewPending() {
+  $('view').innerHTML = `<div class="login-wrap">${hero({ title: 'Esperando aprobación', tall: true })}<div class="sheetbody">
+    <h2 class="big">Hola, ${esc(me.name)}</h2>
+    <p class="muted">El moderador tiene que aprobar tu cuenta. Cuando lo haga, esta pantalla cambia sola.</p>
+    <button class="btn ghost" id="pdOut">Salir</button></div></div>`;
+  $('pdOut').onclick = () => api.signOut();
+}
+
+// ======================================================================================
+// Pantalla 1: inicio con las fechas de las listas
+// ======================================================================================
+function viewHome() {
+  let q = '';
+  let entered = false;
+  const render = () => {
+    // Mientras llegan las listas: tarjetas «fantasma» que brillan.
+    if (!servicesLoaded) {
+      $('dates').innerHTML = '<div class="date-card skel"><div class="img"></div><i></i><i class="s"></i></div>'.repeat(3);
+      $('past').innerHTML = '<div class="date-row skel"><span class="d"></span><span class="t"><i></i><i class="s"></i></span></div>'.repeat(2);
+      return;
+    }
+    // Las tarjetas entran en cascada solo la primera vez.
+    const enter = !entered && !reducedMotion();
+    entered = true;
+    // Si dejaste una lista a medias, aquí la continúas.
+    const d = myDraft();
+    $('hmDraft').innerHTML = d ? `<button class="draft-card" data-open="${d.date}"><span class="ic">✎</span><span class="t"><b>Continuar mi lista</b><small>${esc(niceDate(d.date))} · ${esc(d.title || 'Servicio')} · aún no la envías</small></span><span class="go">›</span></button>` : '';
+    const up = services.filter((s) => s.date >= today());
+    const past = services.filter((s) => s.date < today()).reverse();
+    const filt = (s) => !q || (niceDate(s.date) + ' ' + (s.title || '') + ' ' + (s.leaderName || '')).toLowerCase().includes(q);
+    $('dates').innerHTML = up.filter(filt).map((s, i) => {
+      const d = parseKey(s.date);
+      return `<button class="date-card${enter ? ' enter' : ''}" style="--i:${i}" data-open="${s.date}">${canEditList(s) ? `<span class="edit" data-edit="${s.date}" role="button" aria-label="Editar">✎</span>` : ''}
+        <div class="img"><b>${d.getDate()}</b><span>${MONTHS[d.getMonth()]}</span></div>
+        <h4>${esc(s.title || niceDate(s.date))}</h4><small>${s.leaderName ? '🎤 ' + esc(s.leaderName) + '<br>' : ''}${DAYS[d.getDay()]} · ${s.count != null ? s.count + ' cantos · ' : ''}${statusPill(s)}</small></button>`;
+    }).join('') || '<div class="empty" style="flex:1">Aún no hay fechas. Crea la primera con «＋ Nueva lista».</div>';
+    $('past').innerHTML = past.filter(filt).slice(0, 8).map((s) => {
+      const d = parseKey(s.date);
+      return `<button class="date-row" data-open="${s.date}"><span class="d">${d.getDate()}<small>${MONTHS[d.getMonth()].toUpperCase()}</small></span><span class="t"><b>${esc(s.title || niceDate(s.date))}</b><small>${niceDate(s.date)}</small></span>${statusPill(s)}</button>`;
+    }).join('') || '<div class="empty">Sin listas anteriores</div>';
+  };
+  $('view').innerHTML = `${hero()}<div class="sheetbody">
+    <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
+    <div class="hello">Hola, ${esc(me.name.split(' ')[0])}</div>
+    <h2 class="big">Listas de alabanza</h2>
+    <div class="search"><span>🔍</span><input id="hmSearch" placeholder="Buscar fecha, servicio o quién ministra…"></div>
+    <div id="hmDraft"></div>
+    <div class="sec"><h3>Próximas fechas</h3>${canCreate() ? '<button class="new-pill" data-go="#/nueva">＋ Nueva lista</button>' : ''}</div>
+    <div class="hscroll" id="dates"></div>
+    <div class="sec"><h3>Anteriores</h3></div>
+    <div id="past"></div>
+  </div>`;
+  $('hmSearch').oninput = (e) => { q = e.target.value.trim().toLowerCase(); render(); };
+  $('view').onclick = (e) => {
+    const ed = e.target.closest('[data-edit]');
+    if (ed) { e.stopPropagation(); editService(ed.dataset.edit); return; }
+    const op = e.target.closest('[data-open]');
+    if (op) { go('#/s/' + op.dataset.open); }
+  };
+  render();
+  viewSubs.push(onServices(render));
+}
+// Lista de servicios compartida por las pantallas (se escucha una sola vez).
+const serviceListeners = new Set();
+const onServices = (fn) => { serviceListeners.add(fn); return () => serviceListeners.delete(fn); };
+
+// Miembros aprobados (para elegir quién ministra). Se cargan al usarlos.
+let membersCache = [];
+let membersOff = null;
+function loadMembers(cb) {
+  if (!membersOff) membersOff = api.watchMembers((list) => { membersCache = list.filter((m) => m.role === 'moderador' || m.role === 'colaborador'); if (cb) cb(); });
+  else if (cb) cb();
+}
+const leaderOptions = (sel) => {
+  const list = membersCache.length ? membersCache : [{ id: user.uid, name: me.name }];
+  if (!list.some((m) => m.id === user.uid)) list.unshift({ id: user.uid, name: me.name });
+  return list.map((m) => `<option value="${esc(m.id)}"${m.id === sel ? ' selected' : ''}>${esc(m.name)}${m.instrument ? ' · ' + esc(m.instrument) : ''}</option>`).join('');
+};
+
+// Editar los datos de una lista ya creada (moderador o quien la creó).
+// Eliminar una lista: se confirma en una hoja (con el nombre y la fecha) antes de borrarla.
+function confirmDeleteList(date) {
+  const s = services.find((x) => x.date === date) || { date };
+  openSheet(`<div class="del-ic">🗑</div><h2 style="text-align:center">¿Eliminar esta lista?</h2>
+    <p class="muted center" style="margin:0">${esc(s.title || 'Servicio')} · ${esc(niceDate(date))}${s.leaderName ? ' · ministra ' + esc(s.leaderName) : ''}<br>Se borran también sus cantos y comentarios. No se puede deshacer.</p>
+    <button class="btn red" id="dlOk" style="background:var(--red);color:#fff">Sí, eliminar</button>
+    <button class="btn ghost" id="dlNo">Cancelar</button>`, () => {
+    $('dlNo').onclick = () => closeSheet();
+    $('dlOk').onclick = async () => {
+      await busy($('dlOk'), api.deleteService(date));
+      closeSheet(); toast('Lista eliminada'); haptic(20);
+      if (location.hash.startsWith('#/s/' + date)) { backNav = true; go('#/'); }
+    };
+  });
+}
+function editService(date) {
+  const s = services.find((x) => x.date === date);
+  if (!s) return;
+  openSheet(`<h2>Editar lista · ${esc(niceDate(date))}</h2>
+    <label class="l">Quién ministra</label><select id="esLeader">${leaderOptions(s.leader || s.by)}</select>
+    <label class="l">Nombre del servicio</label><input id="esTitle" maxlength="60" value="${esc(s.title || '')}" placeholder="Culto general, Santa Cena…">
+    <label class="l">Nota para el equipo</label><textarea id="esNote" maxlength="400" placeholder="Indicaciones generales">${esc(s.note || '')}</textarea>
+    <button class="btn" id="esSave">Guardar</button>
+    <button class="btn ghost" id="esSongs">✎ Editar cantos y orden</button>
+    <button class="btn red" id="esDel">Borrar esta lista</button>
+    <button class="btn ghost" id="esCancel">Cancelar</button>`, () => {
+    loadMembers(() => { if ($('esLeader')) $('esLeader').innerHTML = leaderOptions(s.leader || s.by); });
+    $('esCancel').onclick = closeSheet;
+    $('esSongs').onclick = () => { closeSheet(); go(`#/s/${date}/cantos`); };
+    $('esSave').onclick = async () => {
+      const lid = $('esLeader').value;
+      const leader = membersCache.find((m) => m.id === lid) || { id: user.uid, name: me.name };
+      await api.saveService(date, { title: $('esTitle').value.trim(), note: $('esNote').value.trim(), leader: leader.id, leaderName: leader.name });
+      closeSheet();
+      toast('Lista guardada');
+    };
+    $('esDel').onclick = () => confirmDeleteList(date);
+  });
+}
+
+// ---- Crear una lista en pasos ----
+// Paso 1: quién ministra y qué fecha. Paso 2: elegir y ordenar los cantos. Paso 3: detalles.
+const stepsBar = (n) => `<div class="steps">${[1, 2, 3].map((i) => `<span class="${i <= n ? 'on' : ''}"></span>`).join('')}</div>`;
+function viewNew() {
+  $('view').innerHTML = `${hero({ title: 'Nueva lista', back: '#/' })}<div class="sheetbody">
+    ${stepsBar(1)}
+    <div class="hello">Paso 1 de 3</div>
+    <h2 class="big">¿Quién ministra y cuándo?</h2>
+    <label class="l">Quién ministra</label><select id="nwLeader">${leaderOptions(user.uid)}</select>
+    <label class="l" style="margin-top:12px">Fecha</label><input type="date" id="nwDate" value="${nextSunday()}">
+    <label class="l" style="margin-top:12px">Servicio</label><input id="nwTitle" maxlength="60" value="Culto general" placeholder="Culto general, Santa Cena…">
+    <div style="height:18px"></div>
+    <button class="btn" id="nwNext">Siguiente: elegir cantos →</button>
+  </div>`;
+  loadMembers(() => { if ($('nwLeader')) $('nwLeader').innerHTML = leaderOptions($('nwLeader').value || user.uid); });
+  $('nwNext').onclick = async () => {
+    const date = $('nwDate').value;
+    if (!date) { toast('Elige la fecha'); return; }
+    const exists = services.find((s) => s.date === date);
+    if (exists) {
+      if (canEditList(exists)) { go(`#/s/${date}/cantos`); return; }
+      toast(`Ya hay una lista para el ${niceDate(date)}${exists.leaderName ? ' (ministra ' + exists.leaderName + ')' : ''}. Ábrela desde Inicio.`);
+      return;
+    }
+    const lid = $('nwLeader').value;
+    const leader = membersCache.find((m) => m.id === lid) || { id: user.uid, name: me.name };
+    try {
+      await api.saveService(date, { title: $('nwTitle').value.trim() || 'Culto general', note: '', status: 'borrador', by: user.uid, byName: me.name, leader: leader.id, leaderName: leader.name });
+    } catch (e) { toast('No se pudo crear la lista: ' + (e.message || e)); return; }
+    go(`#/s/${date}/cantos`);
+  };
+}
+
+// Paso 2: buscador con + y −, y «Tu lista» con el orden (↑ ↓).
+function viewPicker(date) {
+  let items = [];
+  let q = '';
+  const s = () => services.find((x) => x.date === date) || { date };
+  $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/s/' + date })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 90px)">
+    ${stepsBar(2)}
+    <div class="hello">Paso 2 de 3</div>
+    <h2 class="big">Elige los cantos</h2>
+    <div class="sec" style="margin-top:4px"><h3>Tu lista <span class="muted small" id="pkCount"></span></h3></div>
+    <div id="pkMine"></div>
+    <div class="sec"><h3>Agregar</h3><button class="link" id="pkNew">＋ Canto nuevo</button></div>
+    <div class="search" style="margin-bottom:12px"><span>🔍</span><input id="pkQ" placeholder="Buscar canto o autor…"></div>
+    <div id="pkAll"></div>
+  </div>
+  <div class="next-bar"><button class="btn" id="pkNext">Siguiente: detalles →</button></div>`;
+  // Lo último que tocaste se anima al volver a dibujarse (aparece, sube/baja o cambia ＋ por −).
+  let fxKey = '', fxUntil = 0;
+  const fx = (k) => { fxKey = k; fxUntil = Date.now() + 700; };
+  const fxOn = (k) => k === fxKey && Date.now() < fxUntil;
+  const render = () => {
+    if (!canEditList(s())) { $('pkMine').innerHTML = '<div class="empty">Esta lista es de otra persona: solo puedes agregar cantos desde su pantalla.</div>'; }
+    const inList = new Map(items.map((it) => [it.songId, it]));
+    $('pkCount').textContent = items.length ? `· ${items.length} canto${items.length === 1 ? '' : 's'}` : '';
+    if (canEditList(s())) {
+      $('pkMine').innerHTML = items.map((it, i) => {
+        const song = songById(it.songId) || {};
+        return `<div class="pick${fxOn(it.songId) || fxOn(it.id) ? ' pop' : ''}"><span class="mine-num">${i + 1}</span><span class="t"><b>${esc(song.title || it.title || 'Canto')}</b><small>${esc(it.key || song.key || '—')}${song.author ? ' · ' + esc(song.author) : ''}</small></span>
+          <span class="order-btns"><button data-up="${it.id}" aria-label="Subir">▲</button><button data-down="${it.id}" aria-label="Bajar">▼</button></span>
+          <button class="pm rem" data-rem="${it.id}" aria-label="Quitar">−</button></div>`;
+      }).join('') || '<div class="empty">Aún no elegiste cantos. Búscalos abajo y toca <b>＋</b>.</div>';
+    }
+    $('pkAll').innerHTML = songs.filter((x) => !q || (x.title + ' ' + (x.author || '')).toLowerCase().includes(q)).map((x) => {
+      const it = inList.get(x.id);
+      return `<div class="pick"><span class="t"><b>${esc(x.title)}</b><small>${esc(x.key || '—')}${x.author ? ' · ' + esc(x.author) : ''}${x.status === 'sugerido' ? ' · sugerido' : ''}</small></span>
+        ${it ? `<button class="pm rem${fxOn(x.id) ? ' morph' : ''}" data-rem="${it.id}" aria-label="Quitar">−</button>` : `<button class="pm add${fxOn('out:' + x.id) ? ' morph' : ''}" data-add="${x.id}" aria-label="Agregar">＋</button>`}</div>`;
+    }).join('') || '<div class="empty">Sin resultados. Créalo con «＋ Canto nuevo».</div>';
+  };
+  const move = async (id, dir) => {
+    const i = items.findIndex((x) => x.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= items.length) return;
+    const a = items[i], b = items[j];
+    await Promise.all([api.updateItem(date, a.id, { order: b.order }), api.updateItem(date, b.id, { order: a.order })]);
+  };
+  $('view').onclick = async (e) => {
+    const t = e.target;
+    const add = t.closest('[data-add]');
+    if (add) { const song = songById(add.dataset.add); haptic(); fx(song.id); await addToList(date, items, song.id, song, true); return; }
+    const rem = t.closest('[data-rem]');
+    if (rem) {
+      const it = items.find((x) => x.id === rem.dataset.rem);
+      if (it) fx('out:' + it.songId);
+      // El renglón se va deslizando antes de quitarlo.
+      const row = $('pkMine').querySelector(`[data-rem="${rem.dataset.rem}"]`);
+      if (row) { row.closest('.pick').classList.add('leaving'); await wait(220); }
+      await api.deleteItem(date, rem.dataset.rem); return;
+    }
+    const up = t.closest('[data-up]');
+    if (up) { fx(up.dataset.up); await move(up.dataset.up, -1); return; }
+    const dn = t.closest('[data-down]');
+    if (dn) { fx(dn.dataset.down); await move(dn.dataset.down, 1); return; }
+    if (t.closest('#pkNew')) { editSong(null, { title: $('pkQ').value.trim(), addTo: { date, items, stay: true } }); return; }
+    if (t.closest('#pkNext')) go(`#/s/${date}`);
+  };
+  $('pkQ').oninput = (e) => { q = e.target.value.trim().toLowerCase(); render(); };
+  viewSubs.push(api.watchItems(date, (list) => { items = list; render(); }));
+  viewSubs.push(onSongs(render));
+  viewSubs.push(onServices(render));
+}
+
+// ======================================================================================
+// Pantalla 2: la fecha — carrusel de alabanzas abajo, el canto elegido arriba
+// ======================================================================================
+function viewService(date, selId) {
+  let items = [];
+  let comments = [];
+  let commentsOff = null;
+  let sel = selId || null;
+  const svc = () => services.find((s) => s.date === date) || { date, status: 'borrador' };
+  const itemSong = (it) => (it.songId && songById(it.songId)) || {};
+  const val = (it, k) => it[k] || itemSong(it)[k] || '';
+  // Moderadores: todo. Colaborador: solo SU lista; en las de otros (y los participantes) solo
+  // ve y comenta.
+  const canEdit = () => canEditList(svc());
+  const canAdd = () => canEditList(svc());
+
+  $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/' })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 170px)">
+    <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
+    <div id="svSteps"></div>
+    <div class="modes" id="svModes"></div>
+    <div id="svNote"></div>
+    <div id="svDetail"></div>
+  </div>
+  <div class="songs-car"><div class="wrap"><div class="sec"><h3>Alabanzas</h3><button class="link" id="svAddTop">＋ Agregar</button></div>
+    <div class="hscroll" id="svCar"></div></div></div>`;
+
+  function renderHead() {
+    const s = svc();
+    const isOwner = s.by === user.uid;
+    // Recién creada por quien la está armando: se ve que es el paso 3.
+    $('svSteps').innerHTML = isOwner && canCreate() && !sent(s) ? stepsBar(3) + '<div class="hello" style="margin-bottom:8px">Paso 3 de 3 · toca cada alabanza para su tono, referencia y notas</div>' : '';
+    $('svModes').innerHTML = statusPill(s)
+      + (s.sentAt && sent(s) ? `<span class="small muted">${new Date(s.sentAt).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>` : '')
+      + (canEditList(s) ? '<span style="margin-left:auto;display:flex;gap:6px"><button class="mode plain" data-editsvc>✎ Editar</button><button class="mode plain danger" data-delsvc>🗑 Eliminar</button></span>' : '');
+    // Quien arma la lista (o un moderador) la envía; llega como aviso a los moderadores.
+    const canSend = (isOwner && canCreate()) || isMod();
+    const changed = sent(s) && s.changedAt && s.changedAt > (s.sentAt || 0);
+    const sendBtn = !canSend || !items.length ? ''
+      : !sent(s) ? '<button class="btn green" style="margin-top:10px" data-sendlist>📤 Enviar lista</button>'
+      : changed ? '<button class="btn" style="margin-top:10px" data-sendlist>📤 Enviar cambios</button>'
+      : '<div class="small muted" style="margin-top:8px">✓ Los moderadores ya la recibieron. Si cambias algo, aquí podrás enviar los cambios.</div>';
+    $('svNote').innerHTML = `<div class="field"><div class="lab">${esc(s.title || 'Servicio')}${s.leaderName ? ` · 🎤 ministra <b style="color:var(--title)">${esc(s.leaderName)}</b>` : ''}</div>${s.note ? `<div class="small">${esc(s.note)}</div>` : ''}
+      ${sendBtn}</div>`;
+  }
+  function renderCar() {
+    $('svCar').innerHTML = items.map((it, i) => {
+      const k = val(it, 'key');
+      return `<button class="song-card${it.id === sel ? ' sel' : ''}" data-sel="${it.id}"><span class="top"><span class="ic">${i + 1}</span><span class="k">${esc(k || '—')}</span></span><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}</small></button>`;
+    }).join('') + (canAdd() ? '<button class="song-card add" data-addsong>＋<br>Agregar</button>' : '');
+    $('svAddTop').style.display = canAdd() ? '' : 'none';
+    const selEl = $('svCar').querySelector('.sel');
+    if (selEl) selEl.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+  }
+  // Cambiar de alabanza: el detalle entra desde el lado hacia donde vas (dir 1 = siguiente).
+  function selectItem(id, dir) {
+    sel = id;
+    history.replaceState(null, '', `#/s/${date}/${sel}`);
+    renderCar(); renderDetail();
+    const d = $('svDetail');
+    d.style.transition = ''; d.style.transform = ''; d.style.opacity = '';
+    d.classList.remove('in-next', 'in-prev', 'in-pop');
+    void d.offsetWidth;
+    if (!reducedMotion()) d.classList.add(dir > 0 ? 'in-next' : dir < 0 ? 'in-prev' : 'in-pop');
+    haptic(6);
+    scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  // Gesto: deslizar el detalle a la izquierda/derecha para pasar a la siguiente/anterior.
+  (function detailSwipe() {
+    const d = $('svDetail');
+    let sx = 0, sy = 0, dx = 0, on = false, horiz = null;
+    d.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1 || !sel || e.target.closest('input, textarea, select, iframe, .keys, .chart, .video')) { on = false; return; }
+      sx = e.touches[0].clientX; sy = e.touches[0].clientY; dx = 0; on = true; horiz = null;
+    }, { passive: true });
+    d.addEventListener('touchmove', (e) => {
+      if (!on) return;
+      dx = e.touches[0].clientX - sx;
+      const dy = e.touches[0].clientY - sy;
+      if (horiz === null && (Math.abs(dx) > 10 || Math.abs(dy) > 10)) horiz = Math.abs(dx) > Math.abs(dy) * 1.3;
+      if (!horiz) return;
+      e.preventDefault();
+      const i = items.findIndex((x) => x.id === sel);
+      const edge = (dx > 0 && i === 0) || (dx < 0 && i === items.length - 1);
+      const x = edge ? dx * 0.25 : dx; // resistencia en la primera y la última
+      d.style.transition = 'none';
+      d.style.transform = `translateX(${x}px) rotate(${x / 60}deg)`;
+      d.style.opacity = String(1 - Math.min(0.5, Math.abs(x) / 600));
+    }, { passive: false });
+    d.addEventListener('touchend', () => {
+      if (!on || !horiz) { on = false; return; }
+      on = false;
+      const i = items.findIndex((x) => x.id === sel);
+      const j = dx < -70 ? i + 1 : dx > 70 ? i - 1 : i;
+      if (j !== i && items[j]) {
+        d.style.transition = 'transform .18s ease-in, opacity .18s';
+        d.style.transform = `translateX(${dx < 0 ? -innerWidth : innerWidth}px)`;
+        d.style.opacity = '0';
+        setTimeout(() => selectItem(items[j].id, j > i ? 1 : -1), 170);
+      } else {
+        d.style.transition = 'transform .35s cubic-bezier(.2,1.4,.4,1), opacity .3s';
+        d.style.transform = ''; d.style.opacity = '';
+      }
+    });
+  }());
+  function renderDetail() {
+    const it = items.find((x) => x.id === sel);
+    if (!it) {
+      $('svDetail').innerHTML = items.length ? '<div class="empty">Toca una alabanza de abajo para ver su referencia, tonalidad y comentarios.</div>'
+        : `<div class="empty">Esta lista aún no tiene cantos.${canAdd() ? '<br>Toca «＋ Agregar» abajo.' : ''}</div>`;
+      return;
+    }
+    const i = items.indexOf(it);
+    const song = itemSong(it);
+    const yt = ytId(val(it, 'youtube'));
+    const k = val(it, 'key');
+    $('svDetail').innerHTML = `
+      <div class="field"><div class="song-head"><span class="num">${i + 1}</span><div class="grow"><b>${esc(val(it, 'title'))}</b><small>${esc(val(it, 'author'))}${it.byName ? ' · agregado por ' + esc(it.byName) : ''}</small></div></div></div>
+      <div class="field"><div class="lab">▶ Referencia</div>${yt ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>` : '<div class="small muted">Sin enlace de YouTube.</div>'}
+        ${canEdit(it) ? `<div class="send"><input id="dtYt" placeholder="Pega el enlace de YouTube" value="${esc(it.youtube || '')}"><button data-saveyt>Guardar</button></div>` : ''}</div>
+      <div class="field"><div class="lab">♪ Tonalidad <b style="color:var(--blue);margin-left:auto;font-size:15px">${esc(k || '—')}</b></div>
+        ${canEdit(it) ? `<div class="keys">${KEYS.map((x) => `<button data-key="${x}" class="${k.replace('m', '') === x ? 'on' : ''}">${x}</button>`).join('')}</div>
+        <div class="keyline"><button class="mode${/m$/.test(k) ? ' on' : ''}" data-minor>Menor</button><span class="small muted">${song.key && song.key !== k ? 'Original: ' + esc(song.key) : ''}</span></div>` : ''}</div>
+      <div class="field"><div class="lab">✎ Notas</div>${canEdit(it) ? `<textarea id="dtNotes" placeholder="Indicaciones: quién empieza, repeticiones…">${esc(it.notes || '')}</textarea><div class="send" style="justify-content:flex-end"><button data-savenotes>Guardar notas</button></div>` : `<div>${esc(it.notes || '—')}</div>`}</div>
+      <div class="field"><div class="lab">💬 Comentarios</div><div id="dtComments"><div class="small muted">Cargando…</div></div>
+        <div class="send"><input id="dtComment" maxlength="400" placeholder="Escribe un comentario…"><button data-comment>Enviar</button></div></div>
+      ${it.songId ? `<div class="field"><div class="lab">📄 Charts, partituras y letra</div><button class="btn ghost" data-go="#/cantos" data-songopen="${it.songId}">Abrir el canto</button></div>` : ''}
+      ${canEditList(svc()) ? `<div class="reorder"><button data-move="-1">← Antes</button><button data-move="1">Después →</button></div>` : ''}
+      ${canEdit(it) ? '<button class="btn red" style="margin-top:12px" data-delitem>Quitar de esta lista</button>' : ''}`;
+    if (commentsOff) commentsOff();
+    commentsOff = api.watchComments(date, it.id, (list) => { comments = list; renderComments(); });
+  }
+  function renderComments() {
+    const box = $('dtComments');
+    if (!box) return;
+    box.innerHTML = comments.map((c) => `<div class="comment"><span class="c-av">${face(allMembers[c.by] || { name: c.byName })}</span><b>${esc(c.byName || '')}</b> <small>${new Date(c.at).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small>${(isMod() || c.by === user.uid) ? ` <button class="link small" data-delc="${c.id}">borrar</button>` : ''}<p>${esc(c.text)}</p></div>`).join('') || '<div class="small muted">Sin comentarios todavía.</div>';
+  }
+
+  $('view').onclick = async (e) => {
+    const t = e.target;
+    const s = t.closest('[data-sel]');
+    if (s) { const from = items.findIndex((x) => x.id === sel); const to = items.findIndex((x) => x.id === s.dataset.sel); selectItem(s.dataset.sel, from < 0 ? 0 : to > from ? 1 : to < from ? -1 : 0); return; }
+    if (t.closest('[data-addsong]') || t.closest('#svAddTop')) {
+      if (!canAdd()) return;
+      if (canEditList(svc())) go(`#/s/${date}/cantos`); else pickSong(date, items);
+      return;
+    }
+    if (t.closest('[data-sendlist]')) {
+      const s = svc();
+      const again = sent(s);
+      await busy(t.closest('[data-sendlist]'), api.saveService(date, { status: 'enviada', sentAt: Date.now() }));
+      celebrate(again ? 'Cambios enviados' : '¡Lista enviada!');
+      await notify('moderadores', {
+        kind: 'lista', link: `#/s/${date}`,
+        text: `${me.name} ${again ? 'actualizó' : 'envió'} la lista del ${niceDate(date)}${s.leaderName ? ' (ministra ' + s.leaderName + ')' : ''} · ${items.length} canto${items.length === 1 ? '' : 's'}`,
+      });
+      toast(again ? '✓ Cambios enviados a los moderadores' : '✓ Lista enviada: les llegó a los moderadores');
+      return;
+    }
+    if (t.closest('[data-editsvc]')) { editService(date); return; }
+    if (t.closest('[data-delsvc]')) { confirmDeleteList(date); return; }
+    const so = t.closest('[data-songopen]');
+    if (so) { sessionStorage.setItem('abrirCanto', so.dataset.songopen); return; }
+    const it = items.find((x) => x.id === sel);
+    if (!it) return;
+    const key = t.closest('[data-key]');
+    if (key) { const minor = /m$/.test(val(it, 'key')); await api.updateItem(date, it.id, { key: key.dataset.key + (minor ? 'm' : '') }); return; }
+    if (t.closest('[data-minor]')) { const k = val(it, 'key') || 'C'; await api.updateItem(date, it.id, { key: /m$/.test(k) ? k.slice(0, -1) : k + 'm' }); return; }
+    if (t.closest('[data-saveyt]')) { const url = $('dtYt').value.trim(); if (url && !ytId(url)) { toast('Ese enlace no parece de YouTube'); return; } await api.updateItem(date, it.id, { youtube: url }); toast('Referencia guardada'); return; }
+    if (t.closest('[data-savenotes]')) { await api.updateItem(date, it.id, { notes: $('dtNotes').value.trim() }); toast('Notas guardadas'); return; }
+    if (t.closest('[data-comment]')) {
+      const text = $('dtComment').value.trim();
+      if (!text) return;
+      await api.addComment(date, it.id, { text, by: user.uid, byName: me.name });
+      $('dtComment').value = '';
+      // Le avisa a quien hizo la lista (si no soy yo).
+      const owner = svc().by;
+      if (owner && owner !== user.uid) notify(owner, { kind: 'comentario', link: `#/s/${date}/${it.id}`, text: `${me.name} comentó «${val(it, 'title')}» (${niceDate(date)}): ${text.slice(0, 80)}` });
+      return;
+    }
+    const dc = t.closest('[data-delc]');
+    if (dc) { await api.deleteComment(date, it.id, dc.dataset.delc); return; }
+    const mv = t.closest('[data-move]');
+    if (mv) {
+      const i = items.indexOf(it);
+      const j = i + Number(mv.dataset.move);
+      if (j < 0 || j >= items.length) return;
+      const other = items[j];
+      await Promise.all([api.updateItem(date, it.id, { order: other.order }), api.updateItem(date, other.id, { order: it.order })]);
+      return;
+    }
+    if (t.closest('[data-delitem]')) { if (!confirm('¿Quitar este canto de la lista?')) return; await api.deleteItem(date, it.id); sel = null; toast('Quitado de la lista'); }
+  };
+  $('view').onkeydown = (e) => { if (e.key === 'Enter' && e.target.id === 'dtComment') { e.preventDefault(); $('view').querySelector('[data-comment]').click(); } };
+  viewSubs.push(() => { if (commentsOff) commentsOff(); });
+
+  renderHead();
+  viewSubs.push(onServices(() => { renderHead(); renderCar(); }));
+  viewSubs.push(api.watchItems(date, (list) => {
+    // Mantiene al día lo que se está escribiendo: solo se rehace el detalle si cambió algo de él.
+    const before = JSON.stringify(items.find((x) => x.id === sel) || null);
+    items = list;
+    if (sel && !items.some((x) => x.id === sel)) sel = null;
+    renderHead();
+    renderCar();
+    const after = JSON.stringify(items.find((x) => x.id === sel) || null);
+    if (before !== after || !$('svDetail').innerHTML) renderDetail();
+  }));
+  viewSubs.push(() => { if (commentsOff) commentsOff(); });
+}
+
+// Agregar un canto a una lista: de la biblioteca o uno nuevo.
+function pickSong(date, items) {
+  let q = '';
+  openSheet(`<h2>Agregar canto</h2>
+    <div class="search"><span>🔍</span><input id="pkQ" placeholder="Buscar en los cantos…"></div>
+    <div id="pkList" style="max-height:46vh;overflow:auto"></div>
+    <button class="btn dark" id="pkNew">＋ Canto nuevo</button>
+    <button class="btn ghost" id="pkCancel">Cancelar</button>`, () => {
+    const render = () => {
+      const inList = new Set(items.map((x) => x.songId));
+      $('pkList').innerHTML = songs.filter((s) => !q || (s.title + ' ' + s.author).toLowerCase().includes(q)).map((s) =>
+        `<button class="date-row" data-pick="${s.id}"><span class="d" style="background:${s.status === 'sugerido' ? 'var(--cyan)' : 'var(--blue)'}">${esc(s.key || '♪')}</span><span class="t"><b>${esc(s.title)}</b><small>${esc(s.author || '')}${s.status === 'sugerido' ? ' · sugerido' : ''}</small></span>${inList.has(s.id) ? '<span class="status listo">En la lista</span>' : ''}</button>`).join('') || '<div class="empty">Sin resultados: créalo con «Canto nuevo».</div>';
+    };
+    render();
+    $('pkQ').oninput = (e) => { q = e.target.value.trim().toLowerCase(); render(); };
+    $('pkCancel').onclick = closeSheet;
+    $('pkNew').onclick = () => editSong(null, { title: $('pkQ').value.trim(), addTo: { date, items } });
+    $('pkList').onclick = async (e) => {
+      const b = e.target.closest('[data-pick]');
+      if (!b) return;
+      const s = songById(b.dataset.pick);
+      await addToList(date, items, s.id, s);
+      closeSheet();
+    };
+  });
+}
+async function addToList(date, items, songId, song, stay) {
+  const order = items.reduce((m, x) => Math.max(m, Number(x.order) || 0), 0) + 1;
+  const id = await api.addItem(date, { songId, order, key: song.key || '', youtube: song.youtube || '', notes: '', by: user.uid, byName: me.name });
+  toast(`«${song.title}» agregado a la lista`);
+  if (!stay) go(`#/s/${date}/${id}`);
+}
+
+// ======================================================================================
+// Pantalla 3: cantos (sugeridos y agregados) con charts y partituras
+// ======================================================================================
+function viewSongs() {
+  let tab = 'todos';
+  let q = '';
+  let animTab = ''; // los boletos entran en cascada al abrir y al cambiar de pestaña
+  $('view').innerHTML = `${hero({ title: 'Cantos', back: '#/' })}<div class="sheetbody">
+    <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
+    <h2 class="big" style="text-align:center;font-size:21px">Repertorio del equipo</h2>
+    <div class="tabs" id="sgTabs"><button data-tab="todos" class="on">Agregados</button><button data-tab="sugerido">Sugeridos</button></div>
+    <div id="sgLink"></div>
+    <div class="search" style="margin-bottom:16px"><span>🔍</span><input id="sgQ" placeholder="Buscar canto o autor…"></div>
+    <div id="sgList"></div>
+  </div>
+  ${canCreate() ? `<button class="get" id="sgNew">＋ ${isMod() ? 'Nuevo canto' : 'Sugerir canto'}</button>` : ''}`;
+  const render = () => {
+    // Los agregados son los mismos cantos de Letras en el Temporizador.
+    const st = api.tempoStatus ? api.tempoStatus() : 'nube';
+    $('sgLink').innerHTML = tab === 'sugerido' ? '<div class="small muted" style="margin:-6px 4px 12px">Los moderadores aprueban las sugerencias; al aprobarlas pasan al Temporizador.</div>'
+      : `<div class="link-note ${st}"><span class="dot"></span>${st === 'ok' ? 'Compartidos con el <b>Temporizador</b>: lo que agrega un moderador aparece en Letras.' : st === 'off' ? 'El <b>Temporizador</b> no está abierto en la PC: se muestran los últimos cantos que se recibieron.' : st === 'buscando' ? 'Conectando con el <b>Temporizador</b>…' : 'Compartidos con el <b>Temporizador</b> por la nube.'}</div>`;
+    const list = songs.filter((s) => (tab === 'sugerido' ? s.status === 'sugerido' : s.status !== 'sugerido'))
+      .filter((s) => !q || (s.title + ' ' + (s.author || '')).toLowerCase().includes(q));
+    const enter = animTab !== tab;
+    animTab = tab;
+    $('sgList').innerHTML = list.map((s, i) => `<div class="ticket${s.status === 'sugerido' ? ' sug' : ''}${enter && i < 12 ? ' enter' : ''}" style="--i:${i}">
+      <div class="top"><span class="badge"><small>TONO</small><b>${esc(s.key || '—')}</b></span><span class="t"><b>${esc(s.title)}</b><small>${esc(s.author || 'Autor sin indicar')}</small></span>
+        ${isMod() ? `<button class="tk-edit" data-editsong="${s.id}" aria-label="Editar canto">✎</button>` : ''}</div>
+      <div class="dash"></div>
+      <div class="bottom"><span class="ico">${ytId(s.youtube) ? '▶' : '♫'}</span><span class="grow">${s.status === 'sugerido' ? 'Sugerido por ' + esc(s.byName || '—') : sectionsOf(s.text).filter((x) => x.name).length + ' partes' + (s.chart ? ' · con chart' : '')}</span>
+      ${s.status === 'sugerido' && isMod() ? `<button data-approve="${s.id}">Aprobar</button>` : ''}
+      <button class="ghost" data-chart="${s.id}">Chart</button><button data-letra="${s.id}">Letra</button></div></div>`).join('')
+      || `<div class="empty">${tab === 'sugerido' ? 'No hay cantos sugeridos.' : 'Aún no hay cantos.'}</div>`;
+  };
+  $('sgTabs').onclick = (e) => { const b = e.target.closest('[data-tab]'); if (!b) return; tab = b.dataset.tab; $('sgTabs').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); render(); };
+  $('sgQ').oninput = (e) => { q = e.target.value.trim().toLowerCase(); render(); };
+  if ($('sgNew')) $('sgNew').onclick = () => editSong(null);
+  $('sgList').onclick = async (e) => {
+    const a = e.target.closest('[data-approve]');
+    if (a) { await busy(a, api.updateSong(a.dataset.approve, { status: 'agregado' })); celebrate('Canto aprobado'); return; }
+    const ed = e.target.closest('[data-editsong]');
+    if (ed) { editSong(ed.dataset.editsong); return; }
+    const c = e.target.closest('[data-chart]');
+    if (c) { openSong(c.dataset.chart, 'chart'); return; }
+    const l = e.target.closest('[data-letra]');
+    if (l) openSong(l.dataset.letra, 'letra');
+  };
+  render();
+  viewSubs.push(onSongs(render));
+  const want = sessionStorage.getItem('abrirCanto');
+  if (want) { sessionStorage.removeItem('abrirCanto'); setTimeout(() => openSong(want), 50); }
+}
+const songListeners = new Set();
+const onSongs = (fn) => { songListeners.add(fn); return () => songListeners.delete(fn); };
+
+// ---- Partes de un canto (Intro, Verso, Pre-coro, Coro, Puente, Final) ----
+// Se guardan en el mismo formato que Letras del Temporizador: «[Coro]» en una línea abre la parte,
+// y una línea en blanco dentro de la parte separa diapositivas.
+const SECTIONS = ['Intro', 'Verso', 'Pre-coro', 'Coro', 'Puente', 'Final'];
+const secKind = (name) => (/^pre[\s-]?coro/i.test(name) ? 'precoro' : /^(coro|chorus|estribillo)/i.test(name) ? 'coro' : /^(verso|estrofa|verse)/i.test(name) ? 'verso'
+  : /^(puente|bridge)/i.test(name) ? 'puente' : /^(intro)/i.test(name) ? 'intro' : /^(final|outro|tag)/i.test(name) ? 'final' : 'otro');
+function sectionsOf(text) {
+  const out = [];
+  let cur = { name: '', body: [] };
+  for (const line of String(text || '').replace(/\r/g, '').split('\n')) {
+    const h = /^\s*\[(.+?)\]\s*$/.exec(line);
+    if (h) { if (cur.name || cur.body.join('').trim()) out.push(cur); cur = { name: h[1].trim(), body: [] }; } else cur.body.push(line);
+  }
+  if (cur.name || cur.body.join('').trim()) out.push(cur);
+  return out.map((s) => ({ name: s.name, body: s.body.join('\n').trim() }));
+}
+const textOf = (secs) => secs.filter((s) => s.name || s.body.trim()).map((s) => (s.name ? `[${s.name}]\n` : '') + s.body.trim()).join('\n\n');
+const secChip = (name) => `<span class="sec-chip k-${secKind(name)}">${esc(name || 'Letra')}</span>`;
+
+// Ver un canto: «Chart» (acordes, fotos y PDF de partituras) o «Letra» (por partes).
+function openSong(id, mode = 'letra') {
+  const s = songById(id);
+  if (!s) return;
+  const yt = ytId(s.youtube);
+  let filesOff = null;
+  const secs = sectionsOf(s.text);
+  openSheet(`<div class="song-head"><span class="num">${esc(s.key || '♪')}</span><div class="grow"><b>${esc(s.title)}</b><small>${esc(s.author || '')}${s.status === 'sugerido' ? ' · sugerido' : ''}</small></div></div>
+    <div class="tabs" id="soMode"><button data-m="letra" class="${mode === 'letra' ? 'on' : ''}">Letra</button><button data-m="chart" class="${mode === 'chart' ? 'on' : ''}">Chart</button></div>
+    <div id="soLetra"${mode === 'letra' ? '' : ' hidden'}>
+      ${secs.length ? secs.map((x, i) => `<div class="sec-block" style="--i:${i}">${x.name ? secChip(x.name) : ''}
+        ${x.body.split(/\n\s*\n/).filter((t) => t.trim()).map((t) => `<div class="slide-card k-${secKind(x.name)}">${esc(t.trim())}</div>`).join('')}</div>`).join('') : '<div class="empty">Este canto aún no tiene letra.</div>'}
+    </div>
+    <div id="soChart"${mode === 'chart' ? '' : ' hidden'}>
+      ${s.chart ? `<div class="field"><div class="lab">🎸 Acordes</div><div class="chart">${esc(s.chart)}</div></div>` : ''}
+      <div class="field"><div class="lab">📄 Fotos y PDF de partituras</div><div class="files" id="soFiles"><span class="small muted">Cargando…</span></div>
+        ${canCreate() ? '<label class="btn ghost" style="text-align:center;margin-top:10px">＋ Subir foto o PDF<input type="file" id="soUp" accept="image/*,application/pdf" hidden></label>' : ''}</div>
+    </div>
+    ${yt ? `<div class="field"><div class="lab">▶ Referencia</div><div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div></div>` : ''}
+    ${isMod() ? '<button class="btn" id="soEdit">✎ Editar canto</button>' : ''}
+    <button class="btn ghost" id="soClose">Cerrar</button>`, () => {
+    sheetSubs.push(() => { if (filesOff) filesOff(); filesOff = null; });
+    $('soClose').onclick = () => closeSheet();
+    if ($('soEdit')) $('soEdit').onclick = () => editSong(id);
+    $('soMode').onclick = (e) => {
+      const b = e.target.closest('[data-m]');
+      if (!b) return;
+      $('soMode').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      const show = $(b.dataset.m === 'letra' ? 'soLetra' : 'soChart'), hide = $(b.dataset.m === 'letra' ? 'soChart' : 'soLetra');
+      hide.hidden = true; show.hidden = false;
+      show.classList.remove('swap'); void show.offsetWidth; show.classList.add('swap');
+    };
+    filesOff = api.watchFiles(id, (files) => {
+      if (!$('soFiles')) return;
+      $('soFiles').innerHTML = files.map((f) => `<button class="file" data-file="${f.id}" data-type="${esc(f.type)}">${f.type === 'application/pdf' ? '📕' : '🖼'}<span>${esc(f.name)}</span>${(isMod() || f.by === user.uid) ? `<i data-delfile="${f.id}">✕</i>` : ''}</button>`).join('') || '<span class="small muted">Aún no hay charts ni partituras.</span>';
+    });
+    $('soFiles').onclick = async (e) => {
+      const del = e.target.closest('[data-delfile]');
+      if (del) { e.stopPropagation(); if (confirm('¿Borrar este archivo?')) { await api.deleteFile(id, del.dataset.delfile); toast('Archivo borrado'); } return; }
+      const f = e.target.closest('[data-file]');
+      if (!f) return;
+      toast('Abriendo…');
+      try {
+        const b64 = await api.getFile(id, f.dataset.file);
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        const url = URL.createObjectURL(new Blob([bytes], { type: f.dataset.type }));
+        window.open(url, '_blank') || (location.href = url);
+      } catch { toast('No se pudo abrir el archivo'); }
+    };
+    if ($('soUp')) $('soUp').onchange = async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) return;
+      try {
+        toast('Subiendo…');
+        const { base64, type, name } = await prepareFile(file);
+        await api.addFile(id, { name, type, size: base64.length, by: user.uid, byName: me.name }, base64);
+        toast('Archivo agregado');
+      } catch (err) { toast(err.message || 'No se pudo subir'); }
+    };
+  });
+}
+// Foto de perfil: cuadrado centrado, en JPEG pequeño (unos 15–25 KB).
+function squarePhoto(file, size) {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith('image/')) { reject(new Error('Elige una foto')); return; }
+    const img = new Image();
+    img.onload = () => {
+      const side = Math.min(img.width, img.height);
+      const c = document.createElement('canvas');
+      c.width = c.height = size;
+      c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, size, size);
+      URL.revokeObjectURL(img.src);
+      resolve(c.toDataURL('image/jpeg', 0.8));
+    };
+    img.onerror = () => reject(new Error('No se pudo leer la foto'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+// Las fotos se achican (máx. 1800 px) para que pesen poco; los PDF hasta 6 MB.
+function prepareFile(file) {
+  return new Promise((resolve, reject) => {
+    if (file.type === 'application/pdf') {
+      if (file.size > 6e6) { reject(new Error('El PDF debe pesar menos de 6 MB')); return; }
+      const r = new FileReader();
+      r.onload = () => resolve({ base64: String(r.result).split(',')[1], type: 'application/pdf', name: file.name });
+      r.onerror = () => reject(new Error('No se pudo leer el archivo'));
+      r.readAsDataURL(file);
+      return;
+    }
+    if (!file.type.startsWith('image/')) { reject(new Error('Sube una foto o un PDF')); return; }
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 1800 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k);
+      c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      resolve({ base64: c.toDataURL('image/jpeg', 0.82).split(',')[1], type: 'image/jpeg', name: file.name.replace(/\.\w+$/, '') + '.jpg' });
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = () => reject(new Error('No se pudo leer la foto'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+// Crear o editar un canto.
+// - Moderador: canto completo con la letra por partes (Intro, Verso, Pre-coro, Coro, Puente,
+//   Final) y el chart. Se comparte con Letras del Temporizador.
+// - Colaborador: solo sugiere (título, autor, referencia y tono); un moderador lo aprueba.
+function editSong(id, opts = {}) {
+  const s = (id && songById(id)) || { title: opts.title || '', author: '', key: '', youtube: '', text: '', chart: '' };
+  const full = isMod();
+  let secs = sectionsOf(s.text);
+  let fresh = -1; // la parte recién agregada entra con animación
+  openSheet(`<h2>${id ? 'Editar canto' : full ? 'Canto nuevo' : 'Sugerir canto'}</h2>
+    <label class="l">Título</label><input id="edTitle" maxlength="80" value="${esc(s.title)}" placeholder="Nombre del canto">
+    <label class="l">Autor</label><input id="edAuthor" maxlength="80" value="${esc(s.author || '')}" placeholder="Opcional">
+    <label class="l">Referencia de YouTube</label><input id="edYt" value="${esc(s.youtube || '')}" placeholder="https://youtube.com/watch?v=…">
+    <label class="l">Tonalidad original</label><div class="keys" id="edKeys">${KEYS.map((x) => `<button data-key="${x}" class="${(s.key || '').replace('m', '') === x ? 'on' : ''}">${x}</button>`).join('')}</div>
+    <div class="keyline"><button class="mode${/m$/.test(s.key || '') ? ' on' : ''}" id="edMinor">Menor</button></div>
+    ${full ? `<label class="l">Letra por partes</label>
+    <div id="edSecs"></div>
+    <div class="sec-add" id="edAdd">${SECTIONS.map((n) => `<button data-add="${n}" class="k-${secKind(n)}">＋ ${n}</button>`).join('')}</div>
+    <div class="small muted">Dentro de una parte, deja una línea en blanco para pasar a otra diapositiva.</div>
+    <label class="l">Chart (acordes sobre la letra)</label><textarea id="edChart" class="chart" placeholder="G          D&#10;Grande eres Jehová">${esc(s.chart || '')}</textarea>
+    <div class="hint">🔗 Al guardar, el canto también queda en <b>Letras</b> del Temporizador. Las fotos y PDF de partituras se suben desde «Chart».</div>`
+    : '<div class="hint">Tu sugerencia les llega a los moderadores. Cuando la aprueben, ellos le agregan la letra por partes.</div>'}
+    <div class="err" id="edErr"></div>
+    <button class="btn" id="edSave">${id ? 'Guardar cambios' : full ? 'Agregar canto' : 'Enviar sugerencia'}</button>
+    ${id && full && !s.shared ? '<button class="btn red" id="edDel">Borrar canto</button>' : ''}
+    <button class="btn ghost" id="edCancel">Cancelar</button>`, () => {
+    let key = s.key || '';
+    const renderSecs = () => {
+      if (!$('edSecs')) return;
+      // Verso 1, Verso 2…: se numeran solos si hay más de uno.
+      $('edSecs').innerHTML = secs.map((x, i) => `<div class="sec-edit k-${secKind(x.name)}${i === fresh ? ' pop' : ''}" data-i="${i}">
+        <div class="sec-top">${secChip(x.name)}<span class="grow"></span>
+          <button data-mv="-1" aria-label="Subir"${i === 0 ? ' disabled' : ''}>▲</button><button data-mv="1" aria-label="Bajar"${i === secs.length - 1 ? ' disabled' : ''}>▼</button><button data-del aria-label="Quitar parte">✕</button></div>
+        <textarea data-body rows="${Math.min(8, Math.max(3, x.body.split('\n').length + 1))}" placeholder="Escribe la letra de ${esc(x.name || 'esta parte')}…">${esc(x.body)}</textarea></div>`).join('')
+        || '<div class="empty" style="padding:12px">Toca una parte de abajo para empezar: ＋ Intro, ＋ Verso, ＋ Coro…</div>';
+      fresh = -1;
+    };
+    const renumber = () => {
+      const versos = secs.filter((x) => secKind(x.name) === 'verso');
+      if (versos.length > 1) versos.forEach((x, i) => { x.name = `Verso ${i + 1}`; });
+      else if (versos.length === 1 && /^Verso \d+$/.test(versos[0].name)) versos[0].name = 'Verso';
+    };
+    renderSecs();
+    if ($('edSecs')) {
+      $('edSecs').oninput = (e) => { const ta = e.target.closest('[data-body]'); if (ta) secs[Number(ta.closest('[data-i]').dataset.i)].body = ta.value; };
+      $('edSecs').onclick = async (e) => {
+        const box = e.target.closest('[data-i]');
+        if (!box) return;
+        const i = Number(box.dataset.i);
+        const mv = e.target.closest('[data-mv]');
+        if (mv) { const j = i + Number(mv.dataset.mv); if (j < 0 || j >= secs.length) return; [secs[i], secs[j]] = [secs[j], secs[i]]; fresh = j; renumber(); renderSecs(); haptic(5); return; }
+        if (e.target.closest('[data-del]')) {
+          if (secs[i].body.trim() && !confirm(`¿Quitar «${secs[i].name}» y su letra?`)) return;
+          box.classList.add('leaving'); await wait(200);
+          secs.splice(i, 1); renumber(); renderSecs();
+        }
+      };
+      $('edAdd').onclick = (e) => {
+        const b = e.target.closest('[data-add]');
+        if (!b) return;
+        secs.push({ name: b.dataset.add, body: '' });
+        fresh = secs.length - 1;
+        renumber(); renderSecs(); haptic(6);
+        const ta = $('edSecs').querySelector(`[data-i="${fresh === -1 ? secs.length - 1 : fresh}"] textarea`) || $('edSecs').lastElementChild.querySelector('textarea');
+        if (ta) { ta.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(() => ta.focus({ preventScroll: true }), 250); }
+      };
+    }
+    $('edKeys').onclick = (e) => { const b = e.target.closest('[data-key]'); if (!b) return; key = b.dataset.key + (/m$/.test(key) ? 'm' : ''); $('edKeys').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); };
+    $('edMinor').onclick = () => { key = /m$/.test(key) ? key.slice(0, -1) : (key || 'C') + 'm'; $('edMinor').classList.toggle('on', /m$/.test(key)); };
+    $('edCancel').onclick = () => closeSheet();
+    $('edSave').onclick = async () => {
+      const title = $('edTitle').value.trim();
+      const youtube = $('edYt').value.trim();
+      if (!title) { shake($('edTitle')); $('edErr').textContent = 'Escribe el título'; return; }
+      if (youtube && !ytId(youtube)) { shake($('edYt')); $('edErr').textContent = 'El enlace de YouTube no es válido'; return; }
+      const data = { title, author: $('edAuthor').value.trim(), youtube, key };
+      if (full) { data.text = textOf(secs); data.chart = $('edChart').value.replace(/\r/g, ''); }
+      try {
+        if (id) {
+          await busy($('edSave'), api.updateSong(id, data));
+          closeSheet(); toast('✓ Canto guardado'); setTimeout(() => openSong(id, 'letra'), 300); return;
+        }
+        const newId = await busy($('edSave'), api.addSong({ text: '', chart: '', ...data, status: full ? 'agregado' : 'sugerido', by: user.uid, byName: me.name }));
+        closeSheet();
+        if (!full) notify('moderadores', { kind: 'canto', link: '#/cantos', text: `${me.name} sugirió el canto «${title}»` });
+        if (opts.addTo) await addToList(opts.addTo.date, opts.addTo.items, newId, data, opts.addTo.stay);
+        else celebrate(full ? 'Canto agregado' : 'Sugerencia enviada');
+      } catch (e) { shake($('edSave')); if ($('edErr')) $('edErr').textContent = e.message || 'No se pudo guardar'; }
+    };
+    if ($('edDel')) $('edDel').onclick = async () => { if (!confirm('¿Borrar este canto del repertorio?')) return; await api.deleteSong(id); closeSheet(); toast('Canto borrado'); };
+  });
+}
+
+// ======================================================================================
+// Equipo (moderador) y cuenta
+// ======================================================================================
+function viewTeam() {
+  let members = [];
+  $('view').innerHTML = `${hero({ title: 'Equipo', back: '#/' })}<div class="sheetbody"><h2 class="big" style="font-size:21px">${isMod() ? 'Quién puede usar la app' : 'El equipo'}</h2>
+    <p class="muted small">${isMod() ? '<b>Moderador</b>: acceso a todo (pueden ser varios). <b>Colaborador</b>: hace su lista, la envía, sugiere cantos y comenta. <b>Participante</b>: solo ve las listas y comenta. Toca a alguien para cambiar su rol.' : 'Las personas que planean los cantos. Los permisos los dan los moderadores.'}</p>
+    ${isMod() ? '<button class="btn" id="tmNew" style="margin:6px 0 8px">＋ Crear usuario</button>' : ''}
+    <div id="tmList"><div class="member skel"><span class="av"></span><span class="grow"><i></i><i class="s"></i></span></div><div class="member skel"><span class="av"></span><span class="grow"><i></i><i class="s"></i></span></div></div></div>`;
+  const ORDER = { moderador: 0, colaborador: 1, participante: 2, pendiente: 3 };
+  viewSubs.push(api.watchMembers((list) => {
+    members = list;
+    if (!isMod()) list = list.filter((m) => m.role !== 'pendiente');
+    list.sort((a, b) => (ORDER[a.role] ?? 9) - (ORDER[b.role] ?? 9) || a.name.localeCompare(b.name));
+    $('tmList').innerHTML = list.map((m, i) => `<div class="member${isMod() && m.id !== user.uid ? ' tap' : ''} enter" style="--i:${i}" data-member="${m.id}"><span class="av">${face(m)}</span><div class="grow"><b>${esc(m.name)}</b><div class="small muted">${esc(m.instrument || (isMod() ? m.email : '') || '')}</div></div>
+      <span class="status role-${esc(m.role)}">${m.id === user.uid ? 'Tú · ' : ''}${esc(ROLES[m.role] || m.role)}</span>${isMod() && m.id !== user.uid ? '<span class="chev">›</span>' : ''}</div>`).join('');
+  }));
+  if ($('tmNew')) $('tmNew').onclick = () => newUser();
+  $('view').onclick = (e) => {
+    const r = e.target.closest('[data-member]');
+    if (!r || !isMod() || r.dataset.member === user.uid) return;
+    const m = members.find((x) => x.id === r.dataset.member);
+    if (m) editMember(m);
+  };
+}
+// Selector de rol con la píldora que se desliza.
+const roleTabs = (id, sel) => `<div class="tabs" id="${id}">${['moderador', 'colaborador', 'participante'].map((r) => `<button data-r="${r}" class="${sel === r ? 'on' : ''}">${ROLES[r]}</button>`).join('')}</div>`;
+const ROLE_HELP = { moderador: 'Acceso a todo: listas, cantos, equipo y avisos.', colaborador: 'Hace su lista, la envía, sugiere cantos, sube charts y comenta.', participante: 'Solo ve las listas y comenta.' };
+function bindRoleTabs(id, onPick) {
+  $(id).onclick = (e) => { const b = e.target.closest('[data-r]'); if (!b) return; $(id).querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); haptic(5); onPick(b.dataset.r); };
+}
+const randomPass = () => { const c = 'abcdefghjkmnpqrstuvwxyz23456789'; let p = ''; const a = new Uint32Array(8); crypto.getRandomValues(a); a.forEach((n) => { p += c[n % c.length]; }); return p; };
+// El moderador crea la cuenta (correo + contraseña inicial) y le da su rol.
+function newUser() {
+  let role = 'colaborador';
+  openSheet(`<h2>Crear usuario</h2>
+    <label class="l">Nombre</label><input id="nuName" maxlength="40" placeholder="Nombre de la persona">
+    <label class="l">Qué hace</label><input id="nuInst" maxlength="40" placeholder="Opcional: voz, guitarra, batería…">
+    <label class="l">Correo</label><input id="nuEmail" type="email" autocomplete="off" placeholder="correo@ejemplo.com">
+    <label class="l">Contraseña inicial</label><div class="send" style="margin-top:0"><input id="nuPass" autocomplete="new-password" value="${randomPass()}"><button id="nuGen" type="button" aria-label="Otra contraseña">↻</button></div>
+    <label class="l">Rol</label>${roleTabs('nuRole', role)}
+    <div class="small muted" id="nuHelp">${ROLE_HELP[role]}</div>
+    <div class="err" id="nuErr"></div>
+    <button class="btn" id="nuOk">Crear usuario</button>
+    <button class="btn ghost" id="nuCancel">Cancelar</button>`, () => {
+    bindRoleTabs('nuRole', (r) => { role = r; $('nuHelp').textContent = ROLE_HELP[r]; });
+    $('nuGen').onclick = () => { $('nuPass').value = randomPass(); $('nuGen').classList.remove('spin'); void $('nuGen').offsetWidth; $('nuGen').classList.add('spin'); };
+    $('nuCancel').onclick = () => closeSheet();
+    $('nuOk').onclick = async () => {
+      const name = $('nuName').value.trim(), email = $('nuEmail').value.trim().toLowerCase(), pass = $('nuPass').value;
+      if (!name) { shake($('nuName')); return; }
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) { shake($('nuEmail')); $('nuErr').textContent = 'Escribe un correo válido'; return; }
+      if (pass.length < 6) { shake($('nuPass')); $('nuErr').textContent = 'La contraseña debe tener al menos 6 caracteres'; return; }
+      try {
+        await busy($('nuOk'), api.createUser(email, pass, { name, instrument: $('nuInst').value.trim(), role, by: user.uid }));
+      } catch (e) { shake($('nuOk')); $('nuErr').textContent = authError(e); return; }
+      celebrate('Usuario creado');
+      shareAccess(name, email, pass, role);
+    };
+  });
+}
+// Para pasarle a la persona sus datos de entrada.
+function shareAccess(name, email, pass, role) {
+  const link = location.origin + location.pathname;
+  const msg = `Hola ${name}, ya tienes acceso a Listas de alabanza como ${ROLES[role].toLowerCase()}.\nEntra en: ${link}\nCorreo: ${email}\nContraseña: ${pass}\n(Puedes cambiarla en Más › Mi cuenta.)`;
+  openSheet(`<h2>Listo: ${esc(name)}</h2>
+    <p class="muted small" style="margin:0">Pásale estos datos. Al entrar, su teléfono recuerda la sesión.</p>
+    <div class="hint" style="white-space:pre-line;user-select:text">${esc(msg)}</div>
+    ${navigator.share ? '<button class="btn" id="saShare">Compartir…</button>' : ''}
+    <button class="btn ${navigator.share ? 'ghost' : ''}" id="saCopy">Copiar</button>
+    <button class="btn ghost" id="saClose">Cerrar</button>`, () => {
+    if ($('saShare')) $('saShare').onclick = () => navigator.share({ text: msg }).catch(() => {});
+    $('saCopy').onclick = async () => { try { await navigator.clipboard.writeText(msg); toast('✓ Copiado'); } catch { toast('Mantén presionado el texto para copiarlo'); } };
+    $('saClose').onclick = () => closeSheet();
+  });
+}
+function editMember(m) {
+  let role = m.role;
+  openSheet(`<div class="member" style="border:0;padding-top:0"><span class="av">${face(m)}</span><div class="grow"><b>${esc(m.name)}</b><div class="small muted">${esc(m.email || '')}</div></div></div>
+    <label class="l">Rol</label>${roleTabs('emRole', ['moderador', 'colaborador', 'participante'].includes(role) ? role : '')}
+    <div class="small muted" id="emHelp">${ROLE_HELP[role] || 'Elige un rol para darle acceso.'}</div>
+    <button class="btn" id="emSave">Guardar</button>
+    ${api.demo || !m.email ? '' : '<button class="btn ghost" id="emReset">Enviarle un correo para cambiar su contraseña</button>'}
+    <button class="btn red" id="emDel">Quitarle el acceso</button>
+    <button class="btn ghost" id="emCancel">Cancelar</button>`, () => {
+    bindRoleTabs('emRole', (r) => { role = r; $('emHelp').textContent = ROLE_HELP[r]; });
+    $('emCancel').onclick = () => closeSheet();
+    $('emSave').onclick = async () => {
+      if (!ROLE_HELP[role]) { shake($('emRole')); return; }
+      await busy($('emSave'), api.updateMember(m.id, { role }));
+      closeSheet(); toast(`✓ ${m.name} ahora es ${ROLES[role].toLowerCase()}`);
+    };
+    if ($('emReset')) $('emReset').onclick = () => busy($('emReset'), api.reset(m.email)).then(() => toast('Correo enviado a ' + m.email)).catch((e) => toast(authError(e)));
+    $('emDel').onclick = async () => {
+      if (!confirm(`¿Quitarle el acceso a ${m.name}? Ya no podrá entrar a la app.`)) return;
+      await busy($('emDel'), api.removeMember(m.id));
+      closeSheet(); toast('Acceso quitado');
+    };
+  });
+}
+function viewAccount() {
+  const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+  $('view').innerHTML = `${hero({ title: 'Mi cuenta', back: '#/' })}<div class="sheetbody">
+    <div class="profile">
+      <label class="photo-pick" aria-label="Cambiar foto"><span class="av big" id="acFace">${face(me)}</span><span class="cam">📷</span><input type="file" id="acPhoto" accept="image/*" hidden></label>
+      <b>${esc(me.name)}</b><div class="small muted">${esc(user.email || '')} · ${esc(ROLES[me.role] || me.role)}</div>
+      <div class="row" style="justify-content:center;margin-top:6px"><label class="link" for="acPhoto">${me.photo ? 'Cambiar foto' : 'Poner una foto'}</label>${me.photo ? '<button class="link" id="acNoPhoto" style="color:var(--red)">Quitar</button>' : ''}</div>
+    </div>
+    <label class="l small muted">Tu nombre</label><div class="send"><input id="acName" maxlength="40" value="${esc(me.name)}"><button id="acSave">Guardar</button></div>
+    <label class="l" style="margin-top:14px">Apariencia</label>
+    <div class="tabs" id="acTheme" style="margin-top:8px">${[['auto', 'Automático'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([k, n]) => `<button data-th="${k}" class="${theme() === k ? 'on' : ''}">${n}</button>`).join('')}</div>
+    ${standalone ? '' : `<div class="hint" style="margin-top:14px"><b>Instálala en tu teléfono</b><br>${ios ? 'En Safari toca <b>Compartir</b> (□↑) y luego <b>«Agregar a inicio»</b>.' : 'En Chrome toca <b>⋮</b> y luego <b>«Instalar app»</b> o «Agregar a la pantalla principal».'}</div>
+      <button class="btn" id="acInstall" style="margin-top:10px" hidden>Instalar app</button>`}
+    ${api.demo ? '' : '<label class="l" style="margin-top:14px">Cambiar contraseña</label><div class="send"><input id="acPass" type="password" autocomplete="new-password" placeholder="Nueva contraseña (mínimo 6)"><button id="acPassOk">Cambiar</button></div>'}
+    ${api.demo ? `<div class="hint" style="margin-top:14px"><b>Modo demostración</b>: ver la app como <div class="tabs" id="acDemo" style="margin:8px 0 0"><button data-r="moderador" class="${me.role === 'moderador' ? 'on' : ''}">Moderador</button><button data-r="colaborador" class="${me.role === 'colaborador' ? 'on' : ''}">Colaborador</button><button data-r="participante" class="${me.role === 'participante' ? 'on' : ''}">Participante</button></div></div>` : '<button class="btn red" style="margin-top:14px" id="acOut">Cerrar sesión</button>'}
+  </div>`;
+  $('acSave').onclick = async () => { const n = $('acName').value.trim(); if (!n) { shake($('acName')); return; } await busy($('acSave'), api.updateMember(user.uid, { name: n })); toast('✓ Nombre guardado'); };
+  // Foto: se recorta al centro en un cuadrado de 256 px (pesa poco y se ve en todo el equipo).
+  $('acPhoto').onchange = async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const photo = await squarePhoto(file, 256);
+      $('acFace').innerHTML = `<img src="${photo}" alt="">`;
+      $('acFace').classList.remove('pop'); void $('acFace').offsetWidth; $('acFace').classList.add('pop');
+      await api.updateMember(user.uid, { photo });
+      toast('✓ Foto guardada'); haptic();
+    } catch (err) { toast(err.message || 'No se pudo usar esa foto'); }
+  };
+  if ($('acNoPhoto')) $('acNoPhoto').onclick = async () => { await api.updateMember(user.uid, { photo: '' }); toast('Foto quitada'); route(); };
+  if ($('acOut')) $('acOut').onclick = () => { if (confirm('¿Cerrar sesión en este teléfono?')) api.signOut(); };
+  if ($('acPassOk')) $('acPassOk').onclick = async () => {
+    const p = $('acPass').value;
+    if (p.length < 6) { shake($('acPass')); toast('Mínimo 6 caracteres'); return; }
+    try { await busy($('acPassOk'), api.changePassword(p)); $('acPass').value = ''; toast('✓ Contraseña cambiada'); } catch (e) { shake($('acPass')); toast(authError(e)); }
+  };
+  $('acTheme').onclick = (e) => { const b = e.target.closest('[data-th]'); if (!b) return; setTheme(b.dataset.th, e); $('acTheme').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); };
+  if ($('acDemo')) $('acDemo').onclick = (e) => {
+    const b = e.target.closest('[data-r]');
+    if (!b || b.classList.contains('on')) return;
+    $('acDemo').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    haptic();
+    // Deja ver la píldora deslizarse y luego rehace la app con el rol elegido.
+    setTimeout(() => { api.setDemoRole(b.dataset.r); toast('Viendo como ' + b.textContent); }, 260);
+  };
+  if (installEvent && $('acInstall')) { $('acInstall').hidden = false; $('acInstall').onclick = () => installEvent.prompt(); }
+}
+let installEvent = null;
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; });
+
+// ======================================================================================
+// Arranque
+// ======================================================================================
+(async function start() {
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  try { api = DEMO ? demoBackend() : await firebaseBackend(); } catch (e) {
+    $('view').innerHTML = `<div class="empty" style="padding-top:40vh">No se pudo conectar con la nube.<br>Revisa tu internet.<br><br><button class="btn" onclick="location.reload()">Reintentar</button></div>`;
+    return;
+  }
+  $('demo').hidden = !api.demo;
+  document.body.classList.toggle('demo', api.demo);
+  let memberOff = null;
+  let dataOff = [];
+  api.onAuth((u) => {
+    user = u;
+    if (memberOff) { memberOff(); memberOff = null; }
+    dataOff.forEach((f) => f()); dataOff = [];
+    me = null;
+    notifs = []; notifsReady = false; servicesLoaded = false; services = [];
+    if (!u) { route(); return; }
+    memberOff = api.watchMember(u.uid, (m) => {
+      const wasMember = isMember();
+      const wasRole = me && me.role;
+      me = m;
+      if (isMember() && !dataOff.length) {
+        dataOff.push(api.watchServices((list) => { services = list; servicesLoaded = true; hideSplash(); serviceListeners.forEach((f) => { try { f(); } catch (e) { console.warn(e); } }); }));
+        dataOff.push(api.watchSongs((list) => { songs = list; songListeners.forEach((f) => f()); }));
+        dataOff.push(api.watchNotifications(onNotifs));
+        dataOff.push(api.watchMembers((list) => { allMembers = Object.fromEntries(list.map((x) => [x.id, x])); }));
+        dataOff.push(onServices(renderTabbar));
+      }
+      // Si cambió tu rol (por ejemplo, un moderador te dio otro permiso), la pantalla se rehace.
+      if (!wasMember || !isMember() || !$('view').innerHTML || wasRole !== (me && me.role)) { pendingNav = wasMember && isMember() ? 'tab' : null; route(); }
+      else { renderTabbar(); updateBell(); }
+    });
+  });
+})();
