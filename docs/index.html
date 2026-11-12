@@ -571,6 +571,16 @@
   .sec-chip { display: inline-block; border-radius: 99px; padding: 3px 11px; font-size: 11.5px; font-weight: 800; letter-spacing: .02em; color: #fff; background: var(--blue); }
   /* Mismos colores que las partes en Letras del Temporizador */
   .k-intro { --k: #8e8e93; } .k-verso { --k: #63c58e; } .k-precoro { --k: #fabb7c; } .k-coro { --k: #f4a259; } .k-puente { --k: #ec6f73; } .k-final { --k: #8e8e93; } .k-otro { --k: #0a84ff; }
+  /* Referencia: video o audio nuestro */
+  .tabs.ref-tabs { margin: 2px 0 10px; }
+  .tabs.ref-tabs button { font-size: 12.5px; padding: 8px 6px; }
+  #dtRefAudio audio, #dtAudioPlay audio { width: 100%; margin: 4px 0; }
+  .audio-acts { display: flex; gap: 8px; margin-top: 8px; }
+  .audio-acts .btn { padding: 11px 10px; font-size: 14px; }
+  .btn.rec { background: rgba(229,72,77,.18); color: var(--red); animation: recPulse 1.2s ease-in-out infinite; }
+  @keyframes recPulse { 50% { box-shadow: 0 0 0 6px rgba(229,72,77,.18); } }
+  .emo-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; color: var(--muted); }
+  .emo-bar button { border: 1px solid var(--glass-line); background: var(--chip); border-radius: 12px; width: 42px; height: 38px; font-size: 20px; line-height: 1; }
   .split-row { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); }
   .split-row select { width: auto; padding: 8px 32px 8px 12px; font-size: 14px; }
   .sec-chip[class*="k-"] { background: var(--k); }
