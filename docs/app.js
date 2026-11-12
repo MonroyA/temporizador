@@ -174,7 +174,8 @@ function demoBackend() {
     async refresh() { await pullTempo(); emit(); },
     async addNotification(n) { db.notifs[uid8()] = { ...n, at: Date.now() }; save(); },
     watchComments(date, item, cb) { return watch(() => cb(list(db.comments[`${date}/${item}`]).sort((a, b) => a.at - b.at))); },
-    async addComment(date, item, c) { const k = `${date}/${item}`; db.comments[k] = { ...(db.comments[k] || {}), [uid8()]: { ...c, at: Date.now() } }; save(); },
+    async addComment(date, item, c) { const k = `${date}/${item}`; const id = uid8(); db.comments[k] = { ...(db.comments[k] || {}), [id]: { ...c, at: Date.now() } }; save(); return id; },
+    async deleteNotification(id) { delete db.notifs[id]; save(); },
     async deleteComment(date, item, id) { delete db.comments[`${date}/${item}`][id]; save(); },
     // Cantos agregados = biblioteca de Letras del Temporizador (por el puente de servidor-prueba.js).
     // Lo propio del teléfono (tono, YouTube, chart) se guarda aquí, encima del canto del Temporizador.
@@ -285,7 +286,8 @@ async function firebaseBackend() {
     watchNotifications: (cb) => F.onSnapshot(F.query(C('notifications'), F.orderBy('at', 'desc'), F.limit(60)), (s) => cb(snapList(s)), () => cb([])),
     addNotification: (n) => F.addDoc(C('notifications'), { ...n, at: Date.now() }),
     watchComments: (date, item, cb) => F.onSnapshot(F.query(C('services', date, 'items', item, 'comments'), F.orderBy('at')), (s) => cb(snapList(s))),
-    addComment: (date, item, c) => F.addDoc(C('services', date, 'items', item, 'comments'), { ...c, at: Date.now() }),
+    addComment: async (date, item, c) => (await F.addDoc(C('services', date, 'items', item, 'comments'), { ...c, at: Date.now() })).id,
+    deleteNotification: (id) => F.deleteDoc(D('notifications', id)),
     deleteComment: (date, item, id) => F.deleteDoc(D('services', date, 'items', item, 'comments', id)),
     // srvAt (hora del servidor) le dice al Temporizador qué cantos cambiaron. Un canto borrado
     // queda como «borrado» para que también se borre en todas las computadoras.
@@ -415,6 +417,7 @@ function viewNotifs() {
   // Lo nuevo se resalta mientras estás aquí, pero el número de la 🔔 se borra al entrar.
   shownSeen = seenAt();
   renderNotifs();
+  clearSystemNotifs(); // al ver los avisos, se quitan también de la barra del teléfono
   try { localStorage.setItem(SEEN_KEY, String(Date.now())); } catch { /* sin almacenamiento */ }
   updateBell();
   const perm = () => {
@@ -448,9 +451,41 @@ function renderNotifs() {
 // Borrar avisos: el ✕ de cada uno (se va deslizando) o «Borrar todo».
 async function hideNotifs(patch) {
   me = { ...me, ...patch }; // al instante en pantalla; la nube lo confirma después
+  pendingHide = { ...pendingHide, ...patch };
   renderNotifs();
   updateBell();
-  try { await api.updateMember(user.uid, patch); } catch { toast('No se pudo guardar: revisa la conexión'); }
+  clearSystemNotifs();
+  try { await api.updateMember(user.uid, patch); } catch (err) {
+    toast(err && err.code === 'permission-denied' ? 'La nube no dejó guardar: vuelve a pegar las reglas en Firebase' : 'No se pudo guardar: revisa la conexión');
+  }
+}
+// Mientras la nube confirma, la ficha que llega no debe «devolver» los avisos borrados.
+let pendingHide = {};
+function keepHidden(m) {
+  if (!m || !Object.keys(pendingHide).length) return m;
+  const done = (!pendingHide.notifCleared || m.notifCleared >= pendingHide.notifCleared)
+    && (!pendingHide.notifHidden || pendingHide.notifHidden.every((id) => (m.notifHidden || []).includes(id)));
+  if (done) { pendingHide = {}; return m; }
+  return { ...m, notifCleared: Math.max(m.notifCleared || 0, pendingHide.notifCleared || 0), notifHidden: [...new Set([...(m.notifHidden || []), ...(pendingHide.notifHidden || [])])] };
+}
+// Quita también los avisos que quedaron en la barra de notificaciones del teléfono.
+async function clearSystemNotifs(tag) {
+  try {
+    const reg = 'serviceWorker' in navigator && await navigator.serviceWorker.getRegistration();
+    if (!reg) return;
+    (await reg.getNotifications(tag ? { tag } : {})).forEach((n) => n.close());
+  } catch { /* este navegador no lo permite */ }
+}
+// Al borrar un comentario: su aviso se quita (para todos si se puede; si no, al menos para ti).
+function removeNotifFor(cid) {
+  if (!cid) return;
+  for (const n of notifs.filter((x) => x.cid === cid)) {
+    Promise.resolve(api.deleteNotification(n.id)).catch(() => {});
+    clearSystemNotifs(n.id);
+  }
+  notifs = notifs.filter((x) => x.cid !== cid);
+  renderNotifs();
+  updateBell();
 }
 document.addEventListener('click', async (e) => {
   const del = e.target.closest('[data-delnotif]');
@@ -468,7 +503,10 @@ document.addEventListener('click', async (e) => {
     if (!confirm('¿Borrar todos los avisos? (Solo se borran para ti.)')) return;
     document.querySelectorAll('#ntList .notif').forEach((r, i) => { r.style.transitionDelay = `${i * 30}ms`; r.classList.add('leaving'); });
     await wait(260);
-    hideNotifs({ notifCleared: Date.now(), notifHidden: [] });
+    // Hasta el aviso más nuevo que se ve (no la hora de este teléfono: otro teléfono con la hora
+    // adelantada dejaba avisos sin borrar).
+    const newest = Math.max(Date.now(), ...myNotifs().map((n) => n.at || 0));
+    hideNotifs({ notifCleared: newest + 1, notifHidden: [] });
     toast('Avisos borrados');
   }
 }, true);
@@ -1572,15 +1610,33 @@ function viewService(date, selId) {
     if (t.closest('[data-comment]')) {
       const text = $('dtComment').value.trim();
       if (!text) return;
-      await api.addComment(date, it.id, { text, by: user.uid, byName: me.name });
+      const cid = await api.addComment(date, it.id, { text, by: user.uid, byName: me.name });
       $('dtComment').value = '';
-      // Le avisa a quien hizo la lista (si no soy yo).
+      // Le avisa a quien hizo la lista (si no soy yo). El aviso guarda qué comentario es, para
+      // quitarlo si el comentario se borra.
       const owner = svc().by;
-      if (owner && owner !== user.uid) notify(owner, { kind: 'comentario', link: `#/s/${date}/${it.id}`, text: `${me.name} comentó «${val(it, 'title')}» (${niceDate(date)}): ${text.slice(0, 80)}` });
+      if (owner && owner !== user.uid) notify(owner, { kind: 'comentario', cid: cid || '', link: `#/s/${date}/${it.id}`, text: `${me.name} comentó «${val(it, 'title')}» (${niceDate(date)}): ${text.slice(0, 80)}` });
       return;
     }
     const dc = t.closest('[data-delc]');
-    if (dc) { await api.deleteComment(date, it.id, dc.dataset.delc); return; }
+    if (dc) {
+      // Se quita al instante de la pantalla; si la nube no lo deja, vuelve y se explica por qué.
+      const row = dc.closest('.comment');
+      const cid = dc.dataset.delc;
+      if (row) row.classList.add('leaving');
+      try {
+        await api.deleteComment(date, it.id, cid);
+        comments = comments.filter((c) => c.id !== cid);
+        renderComments();
+        // Su aviso («X comentó…») también se va.
+        removeNotifFor(cid);
+        toast('Comentario borrado');
+      } catch (err) {
+        if (row) row.classList.remove('leaving');
+        toast(err && err.code === 'permission-denied' ? 'No tienes permiso para borrar ese comentario' : 'No se pudo borrar: revisa la conexión');
+      }
+      return;
+    }
     const mv = t.closest('[data-move]');
     if (mv) {
       const i = items.indexOf(it);
@@ -2171,7 +2227,7 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
     memberOff = api.watchMember(u.uid, (m) => {
       const wasMember = isMember();
       const wasRole = me && me.role;
-      me = m;
+      me = keepHidden(m);
       if (isMember() && !dataOff.length) {
         dataOff.push(api.watchServices((list) => {
           services = list; servicesLoaded = true; hideSplash();
