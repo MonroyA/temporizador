@@ -403,7 +403,7 @@ function hero({ title = '', back = '', tall = false } = {}) {
   const chip = resumeChip();
   return `<div class="hero${tall ? ' tall' : ''}"><div class="hero-logo" aria-hidden="true"><div class="hl-art"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></div></div><div class="tools">` +
     (chip || (back ? `<button class="round" data-go="${back}" aria-label="Atrás">‹</button>` : '<span class="round ghost"></span>')) +
-    `<button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio">${brandWord()}</button>` +
+    `<span class="brand-col"><button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio">${brandWord()}</button>${!navigator.onLine && (location.hash.replace(/^#/, '') || '/') === '/' ? '<span class="off-tag">📴 OFFLINE</span>' : ''}</span>` +
     (user && me && isMember() ? `<button class="round bell${unread() ? ' has' : ''}" data-go="#/avisos" aria-label="Avisos">${bellInner()}</button>` : '<span class="round ghost"></span>') + '</div>' +
     (title ? `<h1>${esc(title)}</h1>` : '') + '</div>';
 }
@@ -1062,16 +1062,19 @@ function viewHome() {
     // Si dejaste una lista a medias, aquí la continúas.
     const d = myDraft();
     $('hmDraft').innerHTML = d ? `<button class="draft-card" data-open="${d.date}"><span class="ic">✎</span><span class="t"><b>Continuar mi lista</b><small>${esc(niceDate(d.date))} · ${esc(d.title || 'Servicio')} · aún no la envías</small></span><span class="go">›</span></button>` : '';
-    const up = services.filter((s) => s.date >= today());
-    const past = services.filter((s) => s.date < today()).reverse();
+    // Sin internet: solo las listas descargadas (modo offline). Con internet, todas.
+    const off = !navigator.onLine;
+    const up = services.filter((s) => s.date >= today() && (!off || offPack(s.date)));
+    const past = off ? [] : services.filter((s) => s.date < today()).reverse();
     const filt = (s) => !q || (niceDate(s.date) + ' ' + (s.title || '') + ' ' + (s.leaderName || '')).toLowerCase().includes(q);
     $('dates').innerHTML = up.filter(filt).map((s, i) => {
       const d = parseKey(s.date);
       return `<button class="date-card${enter ? ' enter' : ''}" style="--i:${i}" data-open="${s.date}">${canEditList(s) ? `<span class="edit" data-edit="${s.date}" role="button" aria-label="Editar">✎</span>` : ''}
         <div class="img"><b>${d.getDate()}</b><span>${MONTHS[d.getMonth()]}</span></div>
         <h4>${esc(s.title || niceDate(s.date))}</h4><small>${s.leaderName ? '🎤 ' + esc(s.leaderName) + '<br>' : ''}${DAYS[d.getDay()]} · ${s.count != null ? s.count + ' cantos · ' : ''}${statusPill(s)}</small></button>`;
-    }).join('') || '<div class="empty" style="flex:1">Aún no hay fechas. Crea la primera con «＋ Nueva lista».</div>';
-    $('past').innerHTML = past.filter(filt).slice(0, 8).map((s) => {
+    }).join('') || (off ? '<div class="empty" style="flex:1">Sin internet y sin listas descargadas.<br>Con internet, abre una lista y toca «⬇ Modo offline».</div>'
+      : '<div class="empty" style="flex:1">Aún no hay fechas. Crea la primera con «＋ Nueva lista».</div>');
+    $('past').innerHTML = off ? '<div class="empty">Las listas anteriores se ven con internet.</div>' : past.filter(filt).slice(0, 8).map((s) => {
       const d = parseKey(s.date);
       return `<button class="date-row" data-open="${s.date}"><span class="d">${d.getDate()}<small>${MONTHS[d.getMonth()].toUpperCase()}</small></span><span class="t"><b>${esc(s.title || niceDate(s.date))}</b><small>${niceDate(s.date)}</small></span>${statusPill(s)}</button>`;
     }).join('') || '<div class="empty">Sin listas anteriores</div>';
@@ -1419,12 +1422,14 @@ async function offDownload(date, items, onStep) {
   offSave(all);
   return { total: jobs.length, fail };
 }
-// Aviso fijo arriba cuando no hay internet.
+// Sin internet: en Inicio aparece «OFFLINE» bajo «ALABANZA» y solo las listas descargadas.
+// Al volver el internet, todo normal (Inicio se redibuja).
+let netWas = navigator.onLine;
 function renderNetBanner() {
-  let b = $('netBanner');
-  if (navigator.onLine) { if (b) b.remove(); return; }
-  if (!b) { b = Object.assign(document.createElement('div'), { id: 'netBanner' }); document.body.appendChild(b); }
-  b.textContent = '📴 Sin internet · ves lo que está descargado en el teléfono';
+  if (navigator.onLine === netWas) return;
+  netWas = navigator.onLine;
+  const h = location.hash.replace(/^#/, '') || '/';
+  if (h === '/' && user && me && isMember()) route();
 }
 addEventListener('online', renderNetBanner);
 addEventListener('offline', renderNetBanner);
