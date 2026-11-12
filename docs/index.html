@@ -270,6 +270,9 @@
   .notif .t { flex: 1; min-width: 0; }
   .notif .t b { display: block; color: var(--title); font-size: 14px; }
   .notif .t small { color: var(--muted); }
+  .notif { cursor: pointer; transition: transform .22s ease-in, opacity .22s; }
+  .notif.leaving { animation: none !important; transform: translateX(70px); opacity: 0; }
+  .nt-del { flex: none; align-self: center; width: 32px; height: 32px; border-radius: 10px; border: 0; background: var(--chip); color: var(--muted); font-size: 14px; font-weight: 800; }
   .status.enviada { background: rgba(23,178,106,.15); color: var(--green); }
   .status.prep { background: rgba(240,140,0,.15); color: var(--orange); }
   .member { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
@@ -454,8 +457,29 @@
   input, textarea, select { transition: border-color .25s, background-color .25s, box-shadow .25s; }
   input:focus, textarea:focus, select:focus { box-shadow: 0 0 0 4px rgba(42,143,224,.15); }
 
-  /* --- Lista / Solo chart --- */
+  /* --- Lista / Chart / Letra --- */
   .tabs.view-sel { margin: 0 0 12px; }
+  /* Lista en cascada: cada alabanza se despliega con todo lo suyo */
+  .sv-list { display: flex; flex-direction: column; gap: 10px; }
+  .sv-item { border-radius: 18px; background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--shadow); overflow: hidden; scroll-margin-top: 12px; transition: box-shadow .25s; }
+  .sv-item.open { box-shadow: 0 0 0 2px var(--cyan), var(--shadow2); }
+  .sv-head { width: 100%; display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 0; background: none; text-align: left; }
+  .sv-num { width: 34px; height: 34px; border-radius: 11px; flex: none; display: grid; place-items: center; font-weight: 800; color: #fff; background: linear-gradient(135deg, var(--blue), var(--cyan)); }
+  .sv-t { flex: 1; min-width: 0; }
+  .sv-t b { display: block; color: var(--title); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sv-t small { display: block; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sv-tag { display: inline-block; margin-top: 4px; font-size: 11.5px; color: var(--sky-text); background: var(--sky); border-radius: 8px; padding: 2px 8px; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sv-key { flex: none; min-width: 38px; text-align: center; font-weight: 800; font-size: 15px; padding: 6px 8px; border-radius: 10px; background: var(--chip); color: var(--title); }
+  .sv-chev { flex: none; color: var(--faint); font-size: 22px; transition: transform .3s var(--spring); }
+  .sv-item.open .sv-chev { transform: rotate(90deg); color: var(--sky-text); }
+  .sv-body { padding: 0 12px 12px; animation: svOpen .35s var(--ease) both; }
+  .sv-body .field { background: var(--glass2); }
+  @keyframes svOpen { from { opacity: 0; transform: translateY(-6px); } }
+  /* Lector en modo «Letra» */
+  .cr-letra .cr-song { padding: 14px 16px calc(var(--safe-b) + 20px); }
+  .cr-letra .cr-sec { padding: 6px 0 14px; }
+  .cr-letra .cr-lyr { font-size: var(--lyr, 20px); line-height: 1.5; margin: 8px 0 0; padding: 10px 14px; border-radius: 14px; background: rgba(255,255,255,.05); border-left: 4px solid var(--k, var(--blue2)); white-space: pre-line; color: #fff; }
+  .cr-size { flex: none; border: 0; border-radius: 10px; padding: 8px 10px; background: rgba(255,255,255,.12); color: #fff; font-weight: 800; font-size: 13px; }
   /* --- Lector «Solo chart» a pantalla completa --- */
   .cr { position: fixed; inset: 0; z-index: 160; display: flex; flex-direction: column; background: #0b0e17; color: #e9eef8; opacity: 0; transform: scale(.98); transition: opacity .25s, transform .3s var(--ease); }
   .cr.open { opacity: 1; transform: none; }
@@ -521,6 +545,10 @@
   .link-note.buscando .dot { background: var(--blue2); animation: blink 1s infinite; }
   @keyframes live { 70% { box-shadow: 0 0 0 7px rgba(23,178,106,0); } 100% { box-shadow: 0 0 0 0 rgba(23,178,106,0); } }
   @keyframes blink { 50% { opacity: .3; } }
+  .ticket.ador { background: linear-gradient(140deg, #5b3fb8, #2c2a7a); }
+  .ticket.ador.sug { background: linear-gradient(140deg, #8a5cf0, #4b3fb8); }
+  .tab-n { opacity: .65; font-weight: 600; }
+  .tabs.cat-pick { margin-bottom: 2px; }
   .ticket.enter { animation: cardIn .55s var(--spring) both; animation-delay: calc(var(--i, 0) * 50ms); }
   .ticket .bottom { flex-wrap: nowrap; }
   .ticket .bottom .grow { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
