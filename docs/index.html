@@ -293,6 +293,18 @@
   #splash { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; background: #0b2a6b var(--mosaic, none) 0 0 / 176px 176px repeat; transition: opacity .6s var(--ease), visibility .6s; }
   #splash::before { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 50% 45%, rgba(6,14,36,.62), rgba(6,10,22,.92) 70%); }
   #splash .sp-in { position: relative; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+  /* Logo de la iglesia: el sol aparece girando y el águila llega volando; luego planea */
+  #splash { background: #091f1d radial-gradient(circle at 50% 42%, #14423c 0%, #091f1d 72%) !important; }
+  #splash::before { display: none; }
+  #splash .sp-mark { position: relative; width: 190px; height: 152px; margin-bottom: 6px; }
+  #splash .sp-mark img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #splash .sp-mark .ms { animation: spSun 1s cubic-bezier(.2,.8,.2,1) both, spGlow 3s ease-in-out 1s infinite; transform-origin: 53% 73%; }
+  #splash .sp-mark .ma { transform-origin: 60% 62%; animation: spFly 1.2s cubic-bezier(.16,1,.3,1) .25s both, spGlide 4s ease-in-out 1.5s infinite; }
+  @keyframes spSun { from { opacity: 0; transform: scale(.6) rotate(-35deg); } }
+  @keyframes spGlow { 50% { filter: drop-shadow(0 0 10px rgba(120,230,215,.9)); transform: scale(1.04); } }
+  @keyframes spFly { 0% { opacity: 0; transform: translate(-110px, 90px) scale(.55) rotate(-18deg); } 60% { opacity: 1; transform: translate(5px, -6px) scale(1.03) rotate(3deg); } 100% { transform: none; } }
+  @keyframes spGlide { 0%, 100% { transform: none; } 30% { transform: translate(2px, -6px) rotate(-6deg); } 70% { transform: translate(-2px, 2px) rotate(3deg); } }
+  #splash .sp-logo { animation-delay: .9s !important; }
   #splash .sp-ring { position: absolute; top: 50%; left: 50%; width: 130px; height: 130px; margin: -98px 0 0 -65px; border-radius: 50%; border: 2px solid rgba(54,209,230,.55); animation: spRing 2s var(--ease) infinite; }
   #splash .sp-ring.b { animation-delay: .7s; }
   #splash .sp-logo { position: relative; background: #fff; color: #0b2a6b; border-radius: 99px; padding: 14px 30px; font: 800 20px/1 var(--font); letter-spacing: .2em; box-shadow: 0 18px 50px rgba(0,0,0,.45), 0 0 0 8px rgba(255,255,255,.08); animation: spLogo .9s var(--spring) both; }
@@ -601,7 +613,7 @@
 </head>
 <body>
   <div id="splash" aria-hidden="true"><div class="sp-in">
-    <span class="sp-ring"></span><span class="sp-ring b"></span>
+    <div class="sp-mark" aria-hidden="true"><img class="ms" src="medios-sol.png" alt=""><img class="ma" src="medios-aguila.png" alt=""></div>
     <div class="sp-logo">LIS<span>T</span>AS</div>
     <div class="sp-sub">Listas de alabanza</div>
     <div class="sp-notes"><i>♪</i><i>♫</i><i>♪</i></div>
