@@ -639,6 +639,37 @@ function setTheme(t, ev) {
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyTheme);
 applyTheme();
 
+// ---- Modo ligero: para teléfonos con menos fuerza. Sin difuminados de cristal ni animaciones
+// que se repiten, y transiciones más cortas. Se activa solo si la app va lenta (se mide al abrir)
+// o a mano en Mi cuenta. ----
+const LITE_KEY = 'listas-ligero'; // '1' activado, '0' desactivado, 'auto1' detectado, sin valor: medir
+const liteSetting = () => { try { return localStorage.getItem(LITE_KEY) || ''; } catch { return ''; } };
+const isLite = () => document.documentElement.classList.contains('lite');
+function applyLite() {
+  const v = liteSetting();
+  const weak = (navigator.deviceMemory && navigator.deviceMemory <= 2) || (navigator.connection && navigator.connection.saveData);
+  document.documentElement.classList.toggle('lite', v === '1' || v === 'auto1' || (v === '' && !!weak));
+}
+applyLite();
+// Mide los primeros segundos (mientras se ve la bienvenida y la primera pantalla): si muchos
+// cuadros tardan, pasa a modo ligero y lo recuerda.
+(function measureLite() {
+  if (liteSetting() !== '' || isLite()) return;
+  let n = 0, slow = 0, last = 0;
+  const t0 = performance.now();
+  const step = (t) => {
+    if (document.hidden) return; // en segundo plano no cuenta
+    if (last) { n++; if (t - last > 34) slow++; }
+    last = t;
+    if (t - t0 < 3500) { requestAnimationFrame(step); return; }
+    if (n > 30 && slow / n > 0.3) {
+      try { localStorage.setItem(LITE_KEY, 'auto1'); } catch { /* sin almacenamiento */ }
+      applyLite();
+    }
+  };
+  requestAnimationFrame(step);
+})();
+
 function route() {
   clearView();
   closeSheet();
@@ -1249,10 +1280,32 @@ function songFiles(songId) {
 // copia guardada en el teléfono está completa.
 const expectedBytes = (f) => (f && f.size ? Math.floor((f.size * 3) / 4) : 0);
 const sizeOk = (blob, f) => !expectedBytes(f) || Math.abs(blob.size - expectedBytes(f)) <= 3;
+const fileKey = (songId, fid) => new URL(`__archivo/${songId}/${fid}`, location.href).href;
+// Deja el archivo guardado en el teléfono sin tenerlo en memoria (precarga y modo offline:
+// en teléfonos con poca memoria, tener todos los charts abiertos a la vez los ponía lentos).
+async function cacheFile(songId, f) {
+  if (fileMem.has(f.id)) { await fileMem.get(f.id); return; }
+  let cache = null;
+  try {
+    cache = await caches.open(FILE_CACHE);
+    const hit = await cache.match(fileKey(songId, f.id));
+    if (hit) { const b = await hit.blob(); if (b.size && sizeOk(b, f)) return; }
+  } catch { cache = null; }
+  let lastErr = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      const b = await b64ToBlob(await api.getFile(songId, f.id, f), f.type);
+      if (!b.size || !sizeOk(b, f)) { const e = new Error('El archivo está incompleto'); e.code = 'incompleto'; throw e; }
+      if (cache) await cache.put(fileKey(songId, f.id), new Response(b, { headers: { 'Content-Type': f.type } }));
+      return;
+    } catch (e) { lastErr = e; if (i < 2) await wait(i ? 2500 : 900); }
+  }
+  throw lastErr || new Error('No se pudo bajar');
+}
 function fileData(songId, f) {
   if (fileMem.has(f.id)) return fileMem.get(f.id);
   const p = (async () => {
-    const key = new URL(`__archivo/${songId}/${f.id}`, location.href).href;
+    const key = fileKey(songId, f.id);
     let blob = null, cache = null;
     try {
       cache = await caches.open(FILE_CACHE);
@@ -1290,7 +1343,7 @@ function prefetchSongs(ids) {
     prefetched.add(id);
     prefetchQ = prefetchQ.then(async () => {
       const files = (await songFiles(id).catch(() => [])).filter((f) => !isAudio(f));
-      for (const f of files) await fileData(id, f).catch(() => {});
+      for (const f of files) await cacheFile(id, f).catch(() => {});
       if (files.some((f) => f.type === 'application/pdf')) loadPdfJs().catch(() => {});
     });
   }
@@ -1311,6 +1364,70 @@ function prefetchUpcoming() {
   });
   if (done && off) off();
 }
+
+// ---- Modo offline: una lista se descarga completa (letra, charts, PDF y audios) para usarla
+// sin internet. Es temporal: cuando pasa la fecha de la lista (o al tocar «Quitar») se borra. ----
+// La letra, los cantos y la lista quedan en la copia de la nube que guarda la app; los archivos,
+// en «listas-archivos». Aquí se anota qué se bajó para cada fecha.
+const OFF_KEY = 'listas-offline';
+const offAll = () => { try { return JSON.parse(localStorage.getItem(OFF_KEY) || '{}') || {}; } catch { return {}; } };
+const offSave = (all) => { try { localStorage.setItem(OFF_KEY, JSON.stringify(all)); } catch { /* sin espacio */ } };
+const offPack = (date) => offAll()[date] || null;
+// Quita una descarga: borra sus archivos del teléfono (menos los que use otra lista descargada).
+async function offRemove(date) {
+  const all = offAll();
+  const pack = all[date];
+  delete all[date];
+  offSave(all);
+  if (!pack) return;
+  const keep = new Set(Object.values(all).flatMap((p) => p.files || []));
+  try {
+    const c = await caches.open(FILE_CACHE);
+    for (const k of pack.files || []) if (!keep.has(k)) { const [sid, fid] = k.split('/'); await c.delete(fileKey(sid, fid)); fileMem.delete(fid); }
+  } catch { /* sin almacenamiento */ }
+}
+// Al abrir la app: las descargas de listas que ya pasaron se borran solas.
+function offCleanup() {
+  const t = today();
+  for (const [date] of Object.entries(offAll())) if (date < t) offRemove(date);
+}
+// Descarga todo lo de la lista. onStep(hechos, total) para mostrar el avance.
+async function offDownload(date, items, onStep) {
+  const ids = [...new Set(items.map((it) => it.songId).filter(Boolean))];
+  const jobs = [];
+  for (const id of ids) {
+    filesOf.delete(id); // la lista de archivos más reciente
+    const files = await songFiles(id).catch(() => []);
+    files.forEach((f) => jobs.push([id, f]));
+  }
+  let done = 0;
+  const fail = [];
+  onStep(0, jobs.length);
+  if (jobs.some(([, f]) => f.type === 'application/pdf')) await loadPdfJs().catch(() => {});
+  for (const [id, f] of jobs) {
+    try { await cacheFile(id, f); } catch { fail.push(f.name || 'archivo'); }
+    onStep(++done, jobs.length);
+  }
+  // Los comentarios también quedan en la copia (se leen una vez).
+  await Promise.all(items.map((it) => new Promise((res) => {
+    let off = null;
+    const t = setTimeout(() => { if (off) off(); res(); }, 4000);
+    off = api.watchComments(date, it.id, () => { clearTimeout(t); setTimeout(() => off && off(), 0); res(); });
+  })));
+  const all = offAll();
+  all[date] = { date, at: Date.now(), songs: ids, files: jobs.filter(([, f]) => !fail.includes(f.name || 'archivo')).map(([id, f]) => `${id}/${f.id}`) };
+  offSave(all);
+  return { total: jobs.length, fail };
+}
+// Aviso fijo arriba cuando no hay internet.
+function renderNetBanner() {
+  let b = $('netBanner');
+  if (navigator.onLine) { if (b) b.remove(); return; }
+  if (!b) { b = Object.assign(document.createElement('div'), { id: 'netBanner' }); document.body.appendChild(b); }
+  b.textContent = '📴 Sin internet · ves lo que está descargado en el teléfono';
+}
+addEventListener('online', renderNetBanner);
+addEventListener('offline', renderNetBanner);
 
 // ---- PDF: se dibuja dentro de la app con pdf.js (se carga solo la primera vez que hace falta) ----
 const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168';
@@ -1649,6 +1766,7 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
       const [cx, cy] = mid(e.touches);
       pz = { b, zoomEl, z0: zoomOf(b), d0: dist(e.touches), cx0: cx, cy0: cy, cx, cy, s: 1, ox: cx - zr.left, oy: cy - zr.top };
       zoomEl.style.transformOrigin = `${pz.ox}px ${pz.oy}px`;
+      zoomEl.classList.add('pinch');
       return;
     }
     if (e.touches.length !== 1) { horiz = false; return; }
@@ -1676,8 +1794,9 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
   stage.addEventListener('touchend', (e) => {
     if (pz) {
       if (e.touches.length < 2) {
-        const { b, z0, s, cx, cy, ox, oy } = pz;
+        const { b, z0, s, cx, cy, ox, oy, zoomEl } = pz;
         pz = null;
+        zoomEl.classList.remove('pinch');
         setZoom(b, z0 * s, cx, cy, ox / z0, oy / z0);
         // Deja el dedo que queda sin efecto hasta levantarlo.
         setTimeout(() => { pinching = false; }, 60);
@@ -1796,6 +1915,7 @@ function viewService(date, selId) {
   $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/' })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 40px)">
     <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
     <div class="tabs view-sel" id="svView"><button data-vm="lista" class="on">☰ Lista</button><button data-vm="chart">🎼 Chart</button><button data-vm="letra">Aa Letra</button></div>
+    <div id="svOffline"></div>
     <div id="svSteps"></div>
     <div class="modes" id="svModes"></div>
     <div id="svNote"></div>
@@ -2000,7 +2120,7 @@ function viewService(date, selId) {
       ${it.byName ? `<div class="small muted" style="margin:0 2px 8px">Agregado por ${esc(it.byName)}</div>` : ''}
       <div class="field"><div class="lab">▶ Referencia</div>
         <div class="tabs ref-tabs" id="dtRefTabs">${[['youtube', '▶ Video de YouTube'], ['audio', '🎙 Audio nuestro']].map(([k, n]) => `<button type="button" data-ref="${k}" class="${refTypeOf(it) === k ? 'on' : ''}">${n}</button>`).join('')}</div>
-        <div id="dtRefYt"${refTypeOf(it) === 'youtube' ? '' : ' hidden'}>${yt ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>` : '<div class="small muted">Sin enlace de YouTube.</div>'}
+        <div id="dtRefYt"${refTypeOf(it) === 'youtube' ? '' : ' hidden'}>${yt && !navigator.onLine ? '<div class="small muted">📴 El video de YouTube necesita internet.</div>' : yt ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>` : '<div class="small muted">Sin enlace de YouTube.</div>'}
           ${canEdit(it) ? `<div class="send"><input id="dtYt" placeholder="Pega el enlace de YouTube" value="${esc(it.youtube || '')}"><button data-saveyt>Guardar</button></div>` : ''}</div>
         <div id="dtRefAudio"${refTypeOf(it) === 'audio' ? '' : ' hidden'}></div></div>
       <div class="field"><div class="lab">♪ Tonalidad <b style="color:var(--blue);margin-left:auto;font-size:15px">${esc(k || '—')}</b></div>
@@ -2124,6 +2244,52 @@ function viewService(date, selId) {
   $('view').onkeydown = (e) => { if (e.key === 'Enter' && e.target.id === 'dtComment') { e.preventDefault(); $('view').querySelector('[data-comment]').click(); } };
   viewSubs.push(() => { if (commentsOff) commentsOff(); });
 
+  // ---- Modo offline de esta lista ----
+  let offBusy = null; // { done, total } mientras descarga
+  let offLeft = false;
+  viewSubs.push(() => { offLeft = true; });
+  function renderOffline() {
+    const box = $('svOffline');
+    if (!box) return;
+    const pack = offPack(date);
+    const missing = pack ? items.some((it) => it.songId && !pack.songs.includes(it.songId)) : false;
+    if (offBusy) {
+      const pct = offBusy.total ? Math.round((offBusy.done / offBusy.total) * 100) : 0;
+      box.innerHTML = `<div class="off-card busy"><div class="off-row"><b>⬇ Descargando la lista…</b><span>${offBusy.total ? `${offBusy.done} de ${offBusy.total}` : 'preparando'}</span></div><div class="off-bar"><i style="width:${pct}%"></i></div></div>`;
+      return;
+    }
+    box.innerHTML = pack
+      ? `<div class="off-card on"><div class="off-row"><b>✓ Lista disponible sin internet</b><button class="link small" data-offdel>Quitar</button></div>
+          <div class="small muted">${missing ? 'Hay cantos nuevos: se descargan solos con internet.' : 'Letra, charts y audios guardados hasta que pase la fecha. Los videos de YouTube necesitan internet.'}</div></div>`
+      : `<button class="off-btn" data-offget>⬇ Modo offline <small>Descarga letra, charts y audios para usarla sin internet</small></button>`;
+  }
+  async function doOffline(silent) {
+    if (offBusy || !items.length) { if (!items.length && !silent) toast('Esta lista aún no tiene cantos'); return; }
+    if (!navigator.onLine) { if (!silent) toast('Necesitas internet para descargarla'); return; }
+    offBusy = { done: 0, total: 0 };
+    renderOffline();
+    try {
+      const r = await offDownload(date, items, (done, total) => { offBusy = { done, total }; if (!offLeft) renderOffline(); });
+      offBusy = null;
+      if (!offLeft) renderOffline();
+      if (!silent) { if (r.fail.length) toast(`Descargada, pero faltó: ${r.fail.slice(0, 2).join(', ')}${r.fail.length > 2 ? '…' : ''}`); else { toast('✓ Lista descargada: ya funciona sin internet'); haptic(10); } }
+    } catch (e) {
+      offBusy = null;
+      if (!offLeft) renderOffline();
+      if (!silent) toast('No se pudo descargar: revisa la conexión');
+    }
+  }
+  $('svOffline').onclick = async (e) => {
+    if (e.target.closest('[data-offget]')) { doOffline(false); return; }
+    if (e.target.closest('[data-offdel]')) {
+      if (!confirm('¿Quitar la descarga de esta lista? Se borra del teléfono.')) return;
+      await offRemove(date);
+      renderOffline();
+      toast('Descarga quitada');
+    }
+  };
+  renderOffline();
+
   renderHead();
   viewSubs.push(onServices(() => { renderHead(); renderList(); }));
   viewSubs.push(api.watchItems(date, (list) => {
@@ -2137,6 +2303,10 @@ function viewService(date, selId) {
     if (sel && (before !== after || !$('svDetail') || !$('svDetail').innerHTML)) renderDetail();
     // Los charts de esta lista se van guardando en el teléfono desde ya.
     prefetchSongs(items.map((it) => it.songId));
+    // Descargada para offline y llegaron cantos nuevos: se bajan solos (con internet).
+    const pack = offPack(date);
+    if (pack && navigator.onLine && items.some((it) => it.songId && !pack.songs.includes(it.songId))) doOffline(true);
+    else renderOffline();
   }));
   viewSubs.push(() => { if (commentsOff) commentsOff(); });
   // «Chart» y «Letra»: el lector a pantalla completa con los cantos de esta lista en orden.
@@ -2669,6 +2839,7 @@ function viewAccount() {
     <label class="l small muted">Tu nombre</label><div class="send"><input id="acName" maxlength="40" value="${esc(me.name)}"><button id="acSave">Guardar</button></div>
     <label class="l" style="margin-top:14px">Apariencia</label>
     <div class="tabs" id="acTheme" style="margin-top:8px">${[['auto', 'Automático'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([k, n]) => `<button data-th="${k}" class="${theme() === k ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <button class="date-row" id="acLite" role="switch" aria-checked="${isLite()}" style="margin-top:12px"><span class="d" style="font-size:20px">⚡</span><span class="t"><b>Modo ligero</b><small>Más rápido en teléfonos antiguos (menos efectos)${liteSetting() === 'auto1' ? ' · se activó solo' : ''}</small></span><span class="switch${isLite() ? ' on' : ''}"><i></i></span></button>
     ${standalone ? '' : `<div class="hint" style="margin-top:14px"><b>Instálala en tu teléfono</b><br>${ios ? 'En Safari toca <b>Compartir</b> (□↑) y luego <b>«Agregar a inicio»</b>.' : 'En Chrome toca <b>⋮</b> y luego <b>«Instalar app»</b> o «Agregar a la pantalla principal».'}</div>
       <button class="btn" id="acInstall" style="margin-top:10px" hidden>Instalar app</button>`}
     ${api.demo ? '' : '<label class="l" style="margin-top:14px">Cambiar contraseña</label><div class="send"><input id="acPass" type="password" autocomplete="new-password" placeholder="Nueva contraseña (mínimo 6)"><button id="acPassOk">Cambiar</button></div>'}
@@ -2704,6 +2875,15 @@ function viewAccount() {
     // Deja ver la píldora deslizarse y luego rehace la app con el rol elegido.
     setTimeout(() => { api.setDemoRole(b.dataset.r); toast('Viendo como ' + b.textContent); }, 260);
   };
+  $('acLite').onclick = () => {
+    const on = !isLite();
+    try { localStorage.setItem(LITE_KEY, on ? '1' : '0'); } catch { /* sin almacenamiento */ }
+    applyLite();
+    $('acLite').querySelector('.switch').classList.toggle('on', on);
+    $('acLite').setAttribute('aria-checked', String(on));
+    haptic();
+    toast(on ? 'Modo ligero activado' : 'Modo ligero desactivado');
+  };
   if ($('acViewAs')) $('acViewAs').onclick = (e) => {
     const b = e.target.closest('[data-va]');
     if (!b || b.classList.contains('on')) return;
@@ -2727,6 +2907,8 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
   }
   $('demo').hidden = !api.demo;
   document.body.classList.toggle('demo', api.demo);
+  offCleanup();
+  renderNetBanner();
   let memberOff = null;
   let dataOff = [];
   api.onAuth((u) => {
