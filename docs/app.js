@@ -342,6 +342,51 @@ let viewSubs = [];
 // participante (solo ve las listas y comenta). «pendiente» espera aprobación.
 const ROLES = { moderador: 'Moderador', colaborador: 'Colaborador', participante: 'Participante', pendiente: 'Pendiente' };
 const isMod = () => me && me.role === 'moderador';
+// Un moderador puede ver la app como colaborador o participante (solo en este teléfono) y volver.
+const VIEW_KEY = 'listas-ver-como';
+let rawMe = null; // la ficha tal como viene de la nube (con el rol verdadero)
+const viewAsRole = () => { try { return localStorage.getItem(VIEW_KEY) || ''; } catch { return ''; } };
+const viewAs = (m) => {
+  if (!m || m.role !== 'moderador') return m;
+  const r = viewAsRole();
+  return r === 'colaborador' || r === 'participante' ? { ...m, role: r, realRole: 'moderador' } : m;
+};
+const realMod = () => !!me && (me.realRole || me.role) === 'moderador';
+function setViewAs(role) {
+  try { if (role && role !== 'moderador') localStorage.setItem(VIEW_KEY, role); else localStorage.removeItem(VIEW_KEY); } catch { /* sin almacenamiento */ }
+  me = viewAs(keepHidden(rawMe ? { ...rawMe, notifHidden: me && me.notifHidden, notifCleared: me && me.notifCleared } : me));
+  toast(role && role !== 'moderador' ? 'Viendo la app como ' + ROLES[role].toLowerCase() : 'De vuelta como moderador');
+  route();
+}
+function renderViewAsBar() {
+  const r = me && me.realRole && me.role;
+  let bar = $('viewAsBar');
+  if (!r) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = Object.assign(document.createElement('div'), { id: 'viewAsBar' }); document.body.appendChild(bar); }
+  bar.innerHTML = `<span>👁 Como <b>${esc(ROLES[r].toLowerCase())}</b></span><button type="button" id="viewAsBack">Volver a moderador</button>`;
+  $('viewAsBack').onclick = () => { haptic(); setViewAs('moderador'); };
+}
+// «Seguir editando / Seguir viendo»: la última lista que abriste, a un toque desde otras pantallas.
+const LAST_KEY = 'listas-ultima';
+const lastList = () => { try { return sessionStorage.getItem(LAST_KEY) || ''; } catch { return ''; } };
+function resumeChip() {
+  const d = lastList();
+  if (!d || !user || !me || !isMember()) return '';
+  if (location.hash.startsWith('#/s/' + d)) return '';
+  const s = services.find((x) => x.date === d);
+  if (!s) return '';
+  const word = canEditList(s) ? 'editando' : 'viendo';
+  return `<button class="resume-chip" data-go="#/s/${d}" aria-label="Seguir ${word} la lista del ${esc(niceDate(d))}"><i>‹</i><span>Seguir<b>${word}</b></span></button>`;
+}
+// «ALABANZA» del encabezado: las letras aparecen una a una (solo la primera vez) y cada tanto
+// se funden y se vuelven a formar. El ciclo sigue el reloj, así no se reinicia al cambiar de pantalla.
+let wordShown = false;
+function brandWord() {
+  const first = !wordShown;
+  wordShown = true;
+  const phase = Date.now() % 9000;
+  return `<span class="al-word${first ? ' reveal' : ''}" style="--ph:-${phase}ms">${[...'ALABANZA'].map((c, i) => `<i style="--i:${i}">${c}</i>`).join('')}</span>`;
+}
 const canCreate = () => me && (me.role === 'moderador' || me.role === 'colaborador');
 const isMember = () => me && (me.role === 'moderador' || me.role === 'colaborador' || me.role === 'participante');
 const songById = (id) => songs.find((s) => s.id === id);
@@ -355,9 +400,10 @@ addEventListener('hashchange', () => { trackNav(); route(); });
 // Cabecera: «‹» vuelve a la pantalla anterior (siempre a una pantalla concreta, no al historial
 // del navegador). La navegación está en la barra de abajo.
 function hero({ title = '', back = '', tall = false } = {}) {
+  const chip = resumeChip();
   return `<div class="hero${tall ? ' tall' : ''}"><div class="tools">` +
-    (back ? `<button class="round" data-go="${back}" aria-label="Atrás">‹</button>` : '<span class="round ghost"></span>') +
-    '<button class="pill-logo" data-go="#/" aria-label="Inicio">LIS<span>T</span>AS</button>' +
+    (chip || (back ? `<button class="round" data-go="${back}" aria-label="Atrás">‹</button>` : '<span class="round ghost"></span>')) +
+    `<button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio"><span class="al-bg" aria-hidden="true"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></span>${brandWord()}</button>` +
     (user && me && isMember() ? `<button class="round bell${unread() ? ' has' : ''}" data-go="#/avisos" aria-label="Avisos">${bellInner()}</button>` : '<span class="round ghost"></span>') + '</div>' +
     (title ? `<h1>${esc(title)}</h1>` : '') + '</div>';
 }
@@ -601,6 +647,7 @@ function route() {
   $('view').onchange = null;
   $('view').onkeydown = null;
   renderTabbar();
+  renderViewAsBar();
   scrollTo(0, 0);
   renderRoute();
   animateView();
@@ -1479,6 +1526,7 @@ function viewService(date, selId) {
   // ve y comenta.
   const canEdit = () => canEditList(svc());
   const canAdd = () => canEditList(svc());
+  try { sessionStorage.setItem(LAST_KEY, date); } catch { /* sin almacenamiento */ }
 
   // Arriba: «Lista» (los cantos en cascada; al tocar uno se despliega todo lo suyo), «Chart» y
   // «Letra» (los dos últimos, a pantalla completa con los cantos en orden).
@@ -1517,34 +1565,87 @@ function viewService(date, selId) {
   function renderList() {
     $('svAddTop').style.display = canAdd() ? '' : 'none';
     $('svCount').textContent = items.length ? `· ${items.length}` : '';
-    const keep = $('svDetail');
-    if (keep) keep.remove();
-    $('svList').innerHTML = items.map((it, i) => {
+    // Solo se tocan las filas que cambiaron y no se mueven las que siguen en su lugar: mover la
+    // alabanza abierta recargaba su video (el «parpadeo»).
+    const list = $('svList');
+    if (!items.length) {
+      list.innerHTML = `<div class="empty">Esta lista aún no tiene cantos.${canAdd() ? '<br>Toca «＋ Agregar».' : ''}</div>`;
+      opened = null;
+      return;
+    }
+    list.querySelectorAll(':scope > .empty').forEach((x) => x.remove());
+    const rows = new Map([...list.querySelectorAll(':scope > .sv-item')].map((r) => [r.dataset.item, r]));
+    rows.forEach((r, id) => { if (!items.some((x) => x.id === id)) r.remove(); });
+    let after = null;
+    items.forEach((it, i) => {
       const k = val(it, 'key');
       const notes = it.notes ? `<span class="sv-tag">✎ ${esc(it.notes.slice(0, 40))}${it.notes.length > 40 ? '…' : ''}</span>` : '';
-      return `<div class="sv-item${it.id === sel ? ' open' : ''}" data-item="${it.id}">
-        <button class="sv-head" data-sel="${it.id}"><span class="sv-num">${i + 1}</span><span class="sv-t"><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}${(it.refType || (it.audioId ? 'audio' : '')) === 'audio' && it.audioId ? ' · 🎙 audio' : ytId(val(it, 'youtube')) ? ' · ▶ video' : ''}</small>${notes}</span>
-          <span class="sv-key">${esc(k || '—')}</span><span class="sv-chev">›</span></button>
-      </div>`;
-    }).join('') || `<div class="empty">Esta lista aún no tiene cantos.${canAdd() ? '<br>Toca «＋ Agregar».' : ''}</div>`;
-    const row = sel && $('svList').querySelector(`[data-item="${sel}"]`);
-    if (row) {
-      const body = keep && opened === sel ? keep : Object.assign(document.createElement('div'), { id: 'svDetail', className: 'sv-body' });
-      row.appendChild(body);
-    }
+      const head = `<span class="sv-num">${i + 1}</span><span class="sv-t"><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}${(it.refType || (it.audioId ? 'audio' : '')) === 'audio' && it.audioId ? ' · 🎙 audio' : ytId(val(it, 'youtube')) ? ' · ▶ video' : ''}</small>${notes}</span>
+          <span class="sv-key">${esc(k || '—')}</span><span class="sv-chev">›</span>`;
+      let r = rows.get(it.id);
+      if (!r) {
+        r = Object.assign(document.createElement('div'), { className: 'sv-item' });
+        r.dataset.item = it.id;
+        r.innerHTML = `<button class="sv-head" data-sel="${it.id}"></button>`;
+      }
+      const btn = r.querySelector(':scope > .sv-head');
+      if (btn.dataset.h !== head) { btn.innerHTML = head; btn.dataset.h = head; }
+      const want = after ? after.nextElementSibling : list.firstElementChild;
+      if (want !== r) list.insertBefore(r, want);
+      after = r;
+      r.classList.toggle('open', it.id === sel);
+    });
+    // El detalle abierto se queda donde está; si cambió la alabanza abierta, se crea uno nuevo.
+    let body = $('svDetail');
+    if (body && (body.parentElement && body.parentElement.dataset.item) !== sel) { body.remove(); body = null; }
+    const row = sel && list.querySelector(`[data-item="${sel}"]`);
+    if (row && !body) row.appendChild(Object.assign(document.createElement('div'), { id: 'svDetail', className: 'sv-body' }));
     opened = row ? sel : null;
   }
   // Tocar una alabanza la abre (y cierra la que estaba abierta); tocarla otra vez la cierra.
+  // Abrir y cerrar se deslizan (la altura crece o se encoge con suavidad), sin redibujar la lista.
+  const SV_MS = 620;
+  function slide(el, open, done) {
+    const h = el.scrollHeight;
+    if (reducedMotion() || !el.animate) { if (done) done(); return; }
+    el.style.overflow = 'hidden';
+    const shut = { height: '0px', paddingBottom: '0px', opacity: 0, transform: 'translateY(-8px)' };
+    const full = { height: h + 'px', paddingBottom: '12px', opacity: 1, transform: 'none' };
+    const ms = open ? SV_MS : SV_MS - 80;
+    const a = el.animate(open ? [shut, full] : [full, shut], { duration: ms, easing: 'cubic-bezier(.45,.05,.25,1)' });
+    let ended = false;
+    const end = () => { if (ended) return; ended = true; el.style.overflow = ''; a.cancel(); if (done) done(); };
+    a.onfinish = end;
+    // Por si el teléfono pausa la animación (ahorro de batería): igual termina a tiempo.
+    setTimeout(end, ms + 150);
+  }
   function selectItem(id) {
+    const prev = sel;
     sel = sel === id ? null : id;
     history.replaceState(null, '', sel ? `#/s/${date}/${sel}` : `#/s/${date}`);
     if (!sel && commentsOff) { commentsOff(); commentsOff = null; }
-    opened = null;
-    renderList();
-    if (sel) renderDetail();
     haptic(6);
+    // La que estaba abierta se cierra deslizándose (sin ids: la nueva usa los mismos).
+    const old = $('svDetail');
+    const oldRow = prev && $('svList').querySelector(`[data-item="${prev}"]`);
+    if (oldRow) oldRow.classList.remove('open');
+    if (old) {
+      old.removeAttribute('id');
+      old.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id'));
+      old.classList.add('closing');
+      slide(old, false, () => old.remove());
+    }
+    opened = null;
     const row = sel && $('svList').querySelector(`[data-item="${sel}"]`);
-    if (row) setTimeout(() => row.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }), 60);
+    if (!row) return;
+    row.classList.add('open');
+    const body = Object.assign(document.createElement('div'), { id: 'svDetail', className: 'sv-body sliding' });
+    row.appendChild(body);
+    opened = sel;
+    renderDetail();
+    slide(body, true);
+    // Cuando termina de abrir (y de cerrarse la de arriba), la deja a la vista.
+    setTimeout(() => { if (row.isConnected) row.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }); }, old ? SV_MS : 140);
   }
   // ---- Referencia: video de YouTube o audio grabado por nosotros ----
   const refTypeOf = (it) => it.refType || (it.audioId ? 'audio' : 'youtube');
@@ -1619,8 +1720,16 @@ function viewService(date, selId) {
     const typing = $('svDetail').dataset.item === it.id
       ? ['dtNotes', 'dtYt', 'dtComment'].map((k) => [k, $(k) && $(k).value, $(k) && document.activeElement === $(k)]).filter(([, v]) => v != null)
       : [];
+    // Si lo único que cambió es cuál referencia está marcada (video o audio), no se rehace nada:
+    // así el video no se recarga ni la pantalla parpadea.
+    const sig = JSON.stringify([{ ...it, refType: undefined }, canEdit(it), itemSong(it).key, itemSong(it).youtube]);
+    if ($('svDetail').dataset.item === it.id && $('svDetail').dataset.sig === sig && $('dtRefTabs')) {
+      showRef(refTypeOf(it), false);
+      return;
+    }
     setTimeout(() => typing.forEach(([k, v, focused]) => { const el = $(k); if (el && v !== undefined) { el.value = v; if (focused) el.focus({ preventScroll: true }); } }), 0);
     $('svDetail').dataset.item = it.id;
+    $('svDetail').dataset.sig = sig;
     const song = itemSong(it);
     const yt = ytId(val(it, 'youtube'));
     const k = val(it, 'key');
@@ -1644,14 +1753,31 @@ function viewService(date, selId) {
     // Video o audio: cualquiera puede mirar las dos; quien edita la lista elige cuál queda marcada.
     $('dtRefTabs').onclick = (e) => {
       const b = e.target.closest('[data-ref]');
-      if (!b) return;
-      $('dtRefTabs').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-      $('dtRefYt').hidden = b.dataset.ref !== 'youtube';
-      $('dtRefAudio').hidden = b.dataset.ref !== 'audio';
-      if (canEdit(it) && refTypeOf(it) !== b.dataset.ref) api.updateItem(date, it.id, { refType: b.dataset.ref }).catch(() => {});
+      if (!b || b.classList.contains('on')) return;
+      showRef(b.dataset.ref, true);
+      haptic(5);
+      const cur = items.find((x) => x.id === it.id) || it;
+      if (canEdit(cur) && refTypeOf(cur) !== b.dataset.ref) api.updateItem(date, it.id, { refType: b.dataset.ref }).catch(() => {});
     };
     if (commentsOff) commentsOff();
     commentsOff = api.watchComments(date, it.id, (list) => { comments = list; renderComments(); });
+  }
+  // Cambia entre video y audio: la píldora se desliza y el contenido aparece con un fundido suave.
+  // Los dos quedan cargados, así que el video no se recarga al volver.
+  let refShown = '';
+  function showRef(kind, animate) {
+    const tabs = $('dtRefTabs');
+    if (!tabs) return;
+    tabs.dataset.on = kind;
+    tabs.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.ref === kind));
+    const yt = $('dtRefYt'), au = $('dtRefAudio');
+    const show = kind === 'audio' ? au : yt, hide = kind === 'audio' ? yt : au;
+    if (!hide.hidden) hide.hidden = true;
+    if (show.hidden) {
+      show.hidden = false;
+      if (animate && refShown !== kind && show.animate && !reducedMotion()) show.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: 'cubic-bezier(.25,.8,.25,1)' });
+    }
+    refShown = kind;
   }
   function renderComments() {
     const box = $('dtComments');
@@ -2274,6 +2400,9 @@ function viewAccount() {
       <b>${esc(me.name)}</b><div class="small muted">${esc(user.email || '')} · ${esc(ROLES[me.role] || me.role)}</div>
       <div class="row" style="justify-content:center;margin-top:6px"><label class="link" for="acPhoto">${me.photo ? 'Cambiar foto' : 'Poner una foto'}</label>${me.photo ? '<button class="link" id="acNoPhoto" style="color:var(--red)">Quitar</button>' : ''}</div>
     </div>
+    ${realMod() ? `<label class="l" style="margin-top:4px">Ver la app como</label>
+    <div class="tabs" id="acViewAs" style="margin-top:8px">${['moderador', 'colaborador', 'participante'].map((r) => `<button data-va="${r}" class="${me.role === r ? 'on' : ''}">${ROLES[r]}</button>`).join('')}</div>
+    <p class="small muted" style="margin:6px 2px 14px">Para ver lo que ven ellos. Solo cambia en este teléfono; sigues siendo moderador y puedes volver cuando quieras.</p>` : ''}
     <label class="l small muted">Tu nombre</label><div class="send"><input id="acName" maxlength="40" value="${esc(me.name)}"><button id="acSave">Guardar</button></div>
     <label class="l" style="margin-top:14px">Apariencia</label>
     <div class="tabs" id="acTheme" style="margin-top:8px">${[['auto', 'Automático'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([k, n]) => `<button data-th="${k}" class="${theme() === k ? 'on' : ''}">${n}</button>`).join('')}</div>
@@ -2312,6 +2441,13 @@ function viewAccount() {
     // Deja ver la píldora deslizarse y luego rehace la app con el rol elegido.
     setTimeout(() => { api.setDemoRole(b.dataset.r); toast('Viendo como ' + b.textContent); }, 260);
   };
+  if ($('acViewAs')) $('acViewAs').onclick = (e) => {
+    const b = e.target.closest('[data-va]');
+    if (!b || b.classList.contains('on')) return;
+    $('acViewAs').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+    haptic();
+    setTimeout(() => setViewAs(b.dataset.va), 260);
+  };
   if (installEvent && $('acInstall')) { $('acInstall').hidden = false; $('acInstall').onclick = () => installEvent.prompt(); }
 }
 let installEvent = null;
@@ -2340,7 +2476,8 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
     memberOff = api.watchMember(u.uid, (m) => {
       const wasMember = isMember();
       const wasRole = me && me.role;
-      me = keepHidden(m);
+      rawMe = m;
+      me = viewAs(keepHidden(m));
       if (isMember() && !dataOff.length) {
         dataOff.push(api.watchServices((list) => {
           services = list; servicesLoaded = true; hideSplash();
