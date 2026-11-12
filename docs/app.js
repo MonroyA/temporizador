@@ -295,13 +295,24 @@ async function firebaseBackend() {
     deleteSong: (id) => F.updateDoc(D('songs', id), { status: 'borrado', updatedAt: Date.now(), srvAt: F.serverTimestamp() }),
     watchFiles: (song, cb) => F.onSnapshot(C('songs', song, 'files'), (s) => cb(snapList(s))),
     listFiles: async (song) => snapList(await F.getDocs(C('songs', song, 'files'))),
+    // Primero se suben todos los trozos y AL FINAL la ficha del archivo: así ningún teléfono lo
+    // ve (ni lo precarga) hasta que está completo.
     async addFile(song, meta, base64) {
-      const ref = await F.addDoc(C('songs', song, 'files'), { ...meta, chunks: Math.ceil(base64.length / CHUNK), at: Date.now() });
-      for (let i = 0, n = 0; i < base64.length; i += CHUNK, n++) await F.setDoc(D('songs', song, 'files', ref.id, 'chunks', String(n)), { data: base64.slice(i, i + CHUNK) });
+      const ref = F.doc(C('songs', song, 'files')); // id nuevo, todavía sin guardar
+      const n = Math.ceil(base64.length / CHUNK);
+      for (let i = 0; i < n; i++) await F.setDoc(D('songs', song, 'files', ref.id, 'chunks', String(i)), { data: base64.slice(i * CHUNK, (i + 1) * CHUNK) });
+      await F.setDoc(ref, { ...meta, chunks: n, size: base64.length, at: Date.now() });
     },
-    async getFile(song, id) {
+    // Se comprueba que llegaron todos los trozos y el tamaño exacto; si no, es un error (y no se
+    // guarda una copia rota en el teléfono).
+    async getFile(song, id, f = {}) {
       const snap = await F.getDocs(C('songs', song, 'files', id, 'chunks'));
-      return snap.docs.sort((a, b) => Number(a.id) - Number(b.id)).map((d) => d.data().data).join('');
+      const docs = snap.docs.sort((a, b) => Number(a.id) - Number(b.id));
+      const data = docs.map((d) => d.data().data || '').join('');
+      if (!docs.length || !data || (f.chunks && docs.length < f.chunks) || (f.size && data.length !== f.size)) {
+        const e = new Error('El archivo está incompleto'); e.code = 'incompleto'; throw e;
+      }
+      return data;
     },
     async deleteFile(song, id) {
       const snap = await F.getDocs(C('songs', song, 'files', id, 'chunks'));
@@ -1113,14 +1124,33 @@ function songFiles(songId) {
   p.catch(() => filesOf.delete(songId));
   return p;
 }
+// Tamaño real esperado de un archivo según su tamaño en texto (base64): sirve para saber si una
+// copia guardada en el teléfono está completa.
+const expectedBytes = (f) => (f && f.size ? Math.floor((f.size * 3) / 4) : 0);
+const sizeOk = (blob, f) => !expectedBytes(f) || Math.abs(blob.size - expectedBytes(f)) <= 3;
 function fileData(songId, f) {
   if (fileMem.has(f.id)) return fileMem.get(f.id);
   const p = (async () => {
     const key = new URL(`__archivo/${songId}/${f.id}`, location.href).href;
     let blob = null, cache = null;
-    try { cache = await caches.open(FILE_CACHE); const hit = await cache.match(key); if (hit) blob = await hit.blob(); } catch { cache = null; }
+    try {
+      cache = await caches.open(FILE_CACHE);
+      const hit = await cache.match(key);
+      if (hit) blob = await hit.blob();
+      // Una copia rota (de antes de esta corrección) se descarta y se baja de nuevo.
+      if (blob && (!blob.size || !sizeOk(blob, f))) { cache.delete(key).catch(() => {}); blob = null; }
+    } catch { cache = null; }
     if (!blob) {
-      blob = await b64ToBlob(await api.getFile(songId, f.id), f.type);
+      // Hasta 3 intentos (la señal puede fallar un momento o el archivo terminar de subirse).
+      let lastErr = null;
+      for (let i = 0; i < 3 && !blob; i++) {
+        try {
+          const b = await b64ToBlob(await api.getFile(songId, f.id, f), f.type);
+          if (!b.size || !sizeOk(b, f)) { const e = new Error('El archivo está incompleto'); e.code = 'incompleto'; throw e; }
+          blob = b;
+        } catch (e) { lastErr = e; if (i < 2) await wait(i ? 2500 : 900); }
+      }
+      if (!blob) throw lastErr || new Error('No se pudo bajar');
       if (cache) cache.put(key, new Response(blob, { headers: { 'Content-Type': f.type } })).catch(() => {});
     }
     return { url: URL.createObjectURL(blob), type: f.type, blob };
@@ -1195,6 +1225,39 @@ async function renderPdf(box, blob) {
   }
 }
 
+// Muestra un archivo (foto o PDF) en el lector. Si falla, explica por qué y da «Reintentar»
+// (que lo vuelve a bajar de la nube, sin la copia guardada).
+function showFile(fb, songId, f) {
+  fb.innerHTML = '<div class="cr-loading"><i></i></div>';
+  const fail = (e) => {
+    const incomplete = e && e.code === 'incompleto';
+    const offline = !navigator.onLine;
+    fb.innerHTML = `<div class="cr-msg"><b>${esc(f.name || 'Archivo')}</b><br>${offline ? 'Sin conexión: este archivo todavía no está guardado en el teléfono.'
+      : incomplete ? 'Este archivo no terminó de subirse. Si al reintentar sigue igual, súbelo otra vez desde el canto (Chart › Subir foto o PDF).'
+        : 'No se pudo mostrar este archivo.'}<br><button class="cr-retry" type="button">↻ Reintentar</button></div>`;
+    fb.querySelector('.cr-retry').onclick = async () => {
+      fileMem.delete(f.id);
+      try { const c = await caches.open(FILE_CACHE); await c.delete(new URL(`__archivo/${songId}/${f.id}`, location.href).href); } catch { /* sin copia */ }
+      showFile(fb, songId, f);
+    };
+  };
+  fileData(songId, f).then(async (d) => {
+    if (d.type === 'application/pdf') {
+      await renderPdf(fb, d.blob);
+      fb.querySelector('.cr-loading')?.remove();
+      return;
+    }
+    const img = new Image();
+    img.className = 'cr-page';
+    img.decoding = 'async';
+    img.alt = f.name || 'Chart';
+    img.onload = () => fb.querySelector('.cr-loading')?.remove();
+    img.onerror = () => fail({ code: 'incompleto' });
+    img.src = d.url;
+    fb.appendChild(img);
+  }).catch(fail);
+}
+
 // ---- Lector «Solo chart»: pantalla completa, un canto tras otro ----
 // Cada canto se arma una sola vez y se queda listo (oculto) al cambiar: así pasar de uno a otro
 // es instantáneo. Se preparan también el anterior y el siguiente. Deslizar ← → o tocar los
@@ -1227,18 +1290,8 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose }) {
       for (const f of files) {
         const fb = document.createElement('div');
         fb.className = 'cr-file';
-        fb.innerHTML = '<div class="cr-loading"><i></i></div>';
         box.appendChild(fb);
-        fileData(id, f).then(async (d) => {
-          if (d.type === 'application/pdf') { await renderPdf(fb, d.blob); fb.querySelector('.cr-loading')?.remove(); return; }
-          const img = new Image();
-          img.className = 'cr-page';
-          img.decoding = 'async';
-          img.alt = f.name || 'Chart';
-          img.onload = () => fb.querySelector('.cr-loading')?.remove();
-          img.src = d.url;
-          fb.appendChild(img);
-        }).catch(() => { fb.innerHTML = '<div class="cr-msg">No se pudo abrir este archivo. Revisa la conexión y vuelve a intentar.</div>'; });
+        showFile(fb, id, f);
       }
       if (s.chart) box.insertAdjacentHTML('beforeend', `<pre class="cr-chart">${esc(s.chart)}</pre>`);
       if (!files.length && !s.chart) {
