@@ -2,7 +2,10 @@
 // Moderador: crea las fechas, ordena, aprueba y marca «Listo» (el Temporizador la descarga).
 // Colaboradores: agregan cantos a las listas, sugieren cantos nuevos, comentan y suben charts.
 // Los datos viven en Firebase (nube). Sin configurar Firebase, funciona en modo demostración.
-import { FIREBASE_CONFIG } from './config.js';
+import * as CONFIG from './config.js';
+const { FIREBASE_CONFIG } = CONFIG;
+const VAPID_KEY = CONFIG.VAPID_KEY || '';
+const PUSH_URL = CONFIG.PUSH_URL || '';
 
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -262,6 +265,23 @@ async function firebaseBackend() {
       } finally { deleteApp(sec).catch(() => {}); }
     },
     changePassword: (p) => A.updatePassword(auth.currentUser, p),
+    // Avisos con la app cerrada: este teléfono pide su «dirección de avisos» a Firebase y la guarda
+    // en su ficha; la función de la nube manda ahí cada aviso nuevo.
+    async enablePush() {
+      if (!VAPID_KEY || !auth.currentUser) return false;
+      const M = await import(`https://www.gstatic.com/firebasejs/${v}/firebase-messaging.js`);
+      if (!(await M.isSupported())) return false;
+      const reg = await navigator.serviceWorker.ready;
+      const token = await M.getToken(M.getMessaging(app), { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
+      if (!token) return false;
+      let saved = '';
+      try { saved = localStorage.getItem('listas-push') || ''; } catch { /* sin almacenamiento */ }
+      if (saved !== auth.currentUser.uid + '|' + token) {
+        await F.updateDoc(D('members', auth.currentUser.uid), { pushTokens: F.arrayUnion(token) });
+        try { localStorage.setItem('listas-push', auth.currentUser.uid + '|' + token); } catch { /* sin almacenamiento */ }
+      }
+      return true;
+    },
     updateMember: (id, patch) => F.updateDoc(D('members', id), patch),
     removeMember: (id) => F.deleteDoc(D('members', id)),
     watchMembers: (cb) => F.onSnapshot(C('members'), (s) => cb(snapList(s))),
@@ -291,7 +311,17 @@ async function firebaseBackend() {
     watchNotifications: (cb, to = []) => F.onSnapshot(
       to.length ? F.query(C('notifications'), F.where('to', 'in', to.slice(0, 10))) : F.query(C('notifications'), F.orderBy('at', 'desc'), F.limit(60)),
       (s) => cb(snapList(s).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 80)), () => cb([])),
-    addNotification: (n) => F.addDoc(C('notifications'), { ...n, at: Date.now() }),
+    // Después de guardar el aviso, se le pide al servicio de avisos que lo mande a los teléfonos
+    // (con la app cerrada). Si falla, el aviso igual queda en la app (🔔).
+    async addNotification(n) {
+      const ref = await F.addDoc(C('notifications'), { ...n, at: Date.now() });
+      if (PUSH_URL && auth.currentUser) {
+        auth.currentUser.getIdToken().then((t) => fetch(PUSH_URL, {
+          method: 'POST', headers: { Authorization: 'Bearer ' + t, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: ref.id }), keepalive: true,
+        })).catch(() => {});
+      }
+      return ref;
+    },
     watchComments: (date, item, cb) => F.onSnapshot(F.query(C('services', date, 'items', item, 'comments'), F.orderBy('at')), (s) => cb(snapList(s))),
     addComment: async (date, item, c) => (await F.addDoc(C('services', date, 'items', item, 'comments'), { ...c, at: Date.now() })).id,
     deleteNotification: (id) => F.deleteDoc(D('notifications', id)),
@@ -519,6 +549,14 @@ function showChangePopup(list) {
     if (e.target.closest('[data-chgok]') || e.target === el) close();
   };
 }
+// Avisos con la app cerrada: si el teléfono ya dio permiso, se registra (una vez por sesión).
+let pushOk = null;
+async function setupPush(force) {
+  if (!api || !api.enablePush || !('Notification' in window) || Notification.permission !== 'granted') return false;
+  if (pushOk != null && !force) return pushOk;
+  try { pushOk = await api.enablePush(); } catch (e) { console.warn('push', e); pushOk = false; }
+  return pushOk;
+}
 // Aviso del sistema (la barra de notificaciones del teléfono) mientras la app está abierta.
 async function systemNotify(n) {
   if (!('Notification' in window) || Notification.permission !== 'granted') return;
@@ -547,7 +585,11 @@ function viewNotifs() {
       box.innerHTML = `<div class="hint" style="margin-bottom:12px">${ios && !standalone ? 'Para recibir avisos en el iPhone, primero <b>instala la app</b> (Compartir › «Agregar a inicio») y ábrela desde su ícono.' : 'Este navegador no muestra avisos del sistema; los verás aquí y en la 🔔.'}</div>`;
     } else if (Notification.permission === 'default') {
       box.innerHTML = '<button class="btn" id="ntAsk" style="margin-bottom:12px">🔔 Activar avisos en este teléfono</button>';
-      $('ntAsk').onclick = async () => { await Notification.requestPermission(); perm(); if (Notification.permission === 'granted') toast('✓ Avisos activados'); };
+      $('ntAsk').onclick = async () => {
+        await Notification.requestPermission();
+        if (Notification.permission === 'granted') { await setupPush(true); toast('✓ Avisos activados'); }
+        perm();
+      };
     } else if (Notification.permission === 'denied') {
       box.innerHTML = '<div class="hint" style="margin-bottom:12px">Los avisos están bloqueados para esta app. Actívalos en los ajustes del navegador.</div>';
     } else box.innerHTML = '';
@@ -3230,7 +3272,8 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
           setTimeout(prefetchUpcoming, 2500); // los charts de la próxima lista, en segundo plano
         }));
         dataOff.push(api.watchSongs((list) => { songs = list; songListeners.forEach((f) => f()); }));
-        dataOff.push(api.watchNotifications(onNotifs, [u.uid, 'todos', ...(m && m.role === 'moderador' ? ['moderadores'] : [])]));
+        setTimeout(() => setupPush(), 3000);
+        dataOff.push(api.watchNotifications(onNotifs,[u.uid, 'todos', ...(m && m.role === 'moderador' ? ['moderadores'] : [])]));
         dataOff.push(api.watchMembers((list) => { allMembers = Object.fromEntries(list.map((x) => [x.id, x])); }));
         dataOff.push(onServices(renderTabbar));
       }
