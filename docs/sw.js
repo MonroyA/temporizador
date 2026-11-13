@@ -1,6 +1,6 @@
 // Service worker: la app abre al instante (y sin conexión muestra la última versión guardada).
 // Las listas se leen siempre de la nube; esto solo guarda los archivos de la app.
-const CACHE = 'listas-v20';
+const CACHE = 'listas-v21';
 const FILES = ['./', './index.html', './app.js', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './medios-sol.png', './medios-aguila.png'];
 
 // Los archivos se piden siempre frescos al servidor (GitHub Pages deja que el teléfono los guarde
@@ -33,6 +33,24 @@ self.addEventListener('fetch', (e) => {
       return res;
     }).catch(() => caches.match(e.request).then((r) => r || caches.match('./index.html'))),
   );
+});
+// Aviso que llega de la nube con la app cerrada (lo manda la función «avisar» de Firebase).
+// Usa el mismo «tag» que el aviso de la app abierta: así nunca sale repetido.
+self.addEventListener('push', (e) => {
+  let msg = {};
+  try { msg = e.data ? e.data.json() : {}; } catch { msg = { data: { body: e.data && e.data.text() } }; }
+  const d = msg.data || {};
+  const n = msg.notification || {};
+  const title = d.title || n.title || 'Listas de alabanza';
+  const opts = {
+    body: d.body || n.body || 'Tienes un aviso nuevo',
+    icon: 'icon-192.png',
+    badge: 'icon-192.png',
+    tag: d.tag || undefined,
+    renotify: !!d.tag,
+    data: { link: d.link || '#/avisos' },
+  };
+  e.waitUntil(self.registration.showNotification(title, opts));
 });
 // Al tocar un aviso: abre la app (o la trae al frente) en la pantalla del aviso.
 self.addEventListener('notificationclick', (e) => {
