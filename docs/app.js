@@ -519,24 +519,97 @@ function checkListChanges(list) {
   try { localStorage.setItem(CHG_KEY, JSON.stringify(seen)); } catch { /* sin almacenamiento */ }
   if (!chgPending.size) return;
   clearTimeout(chgTimer);
-  chgTimer = setTimeout(() => {
+  chgTimer = setTimeout(async () => {
     const all = [...chgPending.values()];
     chgPending = new Map();
-    showChangePopup(all);
+    // Qué cambió exactamente en la lista principal (comparando con lo que este teléfono vio).
+    const main = all[all.length - 1];
+    let lines = [];
+    try {
+      const items = await itemsOnce(main.date);
+      const s = services.find((x) => x.date === main.date) || {};
+      const prev = seenItems(main.date) || (s.sentSnap ? { items: (s.sentSnap.items || []).map(({ _id, ...x }) => ({ ...x, id: _id })), svc: s.sentSnap.svc || {} } : null);
+      if (prev) lines = diffList(prev.items, items, prev.svc, s);
+      saveSeenItems(main.date, items, s);
+    } catch { /* sin detalle: se avisa igual */ }
+    showChangePopup(all, lines);
   }, 2500);
 }
-function showChangePopup(list) {
+// ---- Lo que este teléfono vio de cada lista (para decir qué cambió) ----
+const SEEN_ITEMS_KEY = 'listas-items-visto';
+const ITEM_KEYS = ['songId', 'key', 'notes', 'youtube', 'refType', 'audioId', 'title', 'order'];
+function seenItems(date) {
+  try { return (JSON.parse(localStorage.getItem(SEEN_ITEMS_KEY) || '{}') || {})[date] || null; } catch { return null; }
+}
+function saveSeenItems(date, items, s) {
+  try {
+    const all = JSON.parse(localStorage.getItem(SEEN_ITEMS_KEY) || '{}') || {};
+    all[date] = {
+      at: Date.now(),
+      items: items.map((it) => Object.fromEntries([['id', it.id], ...ITEM_KEYS.filter((k) => it[k] != null && it[k] !== '').map((k) => [k, it[k]])])),
+      svc: { title: s.title || '', note: s.note || '', leaderName: s.leaderName || '' },
+    };
+    // Solo las listas que no pasaron (no crece para siempre).
+    for (const d of Object.keys(all)) if (d < today()) delete all[d];
+    localStorage.setItem(SEEN_ITEMS_KEY, JSON.stringify(all));
+  } catch { /* sin almacenamiento */ }
+}
+// Los cantos de una lista, una sola vez.
+function itemsOnce(date) {
+  return new Promise((res, rej) => {
+    let off = null, done = false;
+    const t = setTimeout(() => { if (!done) { done = true; if (off) off(); rej(new Error('tarde')); } }, 6000);
+    off = api.watchItems(date, (l) => { if (done) return; done = true; clearTimeout(t); res(l); setTimeout(() => off && off(), 0); });
+    if (done && off) off();
+  });
+}
+// Compara dos versiones de una lista y dice qué cambió, en palabras.
+function diffList(prev, cur, prevSvc = {}, curSvc = {}) {
+  const title = (it) => (it.title || (songById(it.songId) || {}).title || 'un canto');
+  const nth = (n) => `${n}.º`;
+  const P = new Map(prev.map((x) => [x.id, x]));
+  const C = new Map(cur.map((x) => [x.id, x]));
+  const lines = [];
+  cur.forEach((it, i) => { if (!P.has(it.id)) lines.push(`➕ Agregaron «${title(it)}» (${nth(i + 1)} canto)`); });
+  prev.forEach((it) => { if (!C.has(it.id)) lines.push(`➖ Quitaron «${title(it)}»`); });
+  cur.forEach((it, i) => {
+    const old = P.get(it.id);
+    if (!old) return;
+    const what = [];
+    if ((old.songId || '') !== (it.songId || '')) what.push(`cambiaron el canto (antes «${title(old)}»)`);
+    if ((old.key || '') !== (it.key || '')) what.push(`tono ${old.key || '—'} → ${it.key || '—'}`);
+    if ((old.notes || '') !== (it.notes || '')) what.push(it.notes ? `indicaciones: “${String(it.notes).slice(0, 60)}${String(it.notes).length > 60 ? '…' : ''}”` : 'quitaron las indicaciones');
+    if ((old.youtube || '') !== (it.youtube || '')) what.push(it.youtube ? 'nuevo video de referencia' : 'quitaron el video de referencia');
+    if ((old.audioId || '') !== (it.audioId || '')) what.push(it.audioId ? 'nuevo audio de referencia' : 'quitaron el audio');
+    else if ((old.refType || 'youtube') !== (it.refType || 'youtube')) what.push(it.refType === 'audio' ? 'la referencia ahora es el audio' : 'la referencia ahora es el video');
+    if (what.length) lines.push(`✏️ ${nth(i + 1)} canto «${title(it)}»: ${what.join(' · ')}`);
+  });
+  // Orden: los que siguen en la lista, ¿cambiaron de lugar?
+  const before = prev.filter((x) => C.has(x.id)).map((x) => x.id);
+  const after = cur.filter((x) => P.has(x.id)).map((x) => x.id);
+  if (before.join() !== after.join()) {
+    const moved = after.filter((id, k) => before[k] !== id).slice(0, 3).map((id) => `«${title(C.get(id))}» al ${nth(cur.findIndex((x) => x.id === id) + 1)} lugar`);
+    lines.push(`↕️ Cambiaron el orden: ${moved.join(', ')}`);
+  }
+  if ((prevSvc.title || '') !== (curSvc.title || '') && curSvc.title) lines.push(`📝 Nuevo nombre: «${curSvc.title}»`);
+  if ((prevSvc.leaderName || '') !== (curSvc.leaderName || '')) lines.push(`🎤 Ministra: ${curSvc.leaderName || 'nadie'}${prevSvc.leaderName ? ` (antes ${prevSvc.leaderName})` : ''}`);
+  if ((prevSvc.note || '') !== (curSvc.note || '')) lines.push(curSvc.note ? `🗒 Nota de la lista: “${String(curSvc.note).slice(0, 60)}${String(curSvc.note).length > 60 ? '…' : ''}”` : '🗒 Quitaron la nota de la lista');
+  return lines;
+}
+function showChangePopup(list, lines = []) {
   const old = $('chgModal');
   if (old) old.remove();
   const main = list[list.length - 1];
   const s = services.find((x) => x.date === main.date) || {};
   const who = (allMembers[main.by] && allMembers[main.by].name) || 'Alguien del equipo';
   const here = location.hash.startsWith('#/s/' + main.date);
+  const shown = lines.slice(0, 6);
   const el = Object.assign(document.createElement('div'), { id: 'chgModal', className: 'chg-modal' });
   el.innerHTML = `<div class="chg-card" role="dialog" aria-modal="true" aria-labelledby="chgT">
       <div class="chg-ic">✏️</div>
       <h3 id="chgT">Cambió la lista</h3>
       <p><b>${esc(niceDate(main.date))}</b>${s.title ? ' · ' + esc(s.title) : ''}<br><span class="muted">La cambió ${esc(who)}${s.count != null ? ` · ${s.count} canto${s.count === 1 ? '' : 's'}` : ''}</span></p>
+      ${shown.length ? `<ul class="chg-list">${shown.map((t, k) => `<li style="--i:${k}">${esc(t)}</li>`).join('')}${lines.length > shown.length ? `<li class="more" style="--i:${shown.length}">y ${lines.length - shown.length} cambio${lines.length - shown.length === 1 ? '' : 's'} más</li>` : ''}</ul>` : '<p class="small muted">Abre la lista para ver los cambios.</p>'}
       ${list.length > 1 ? `<p class="small muted">También cambiaron: ${list.slice(0, -1).map((x) => esc(niceDate(x.date))).join(', ')}</p>` : ''}
       <div class="chg-acts">${here ? '' : '<button class="btn" data-chgsee>Ver la lista</button>'}<button class="btn ghost" data-chgok>Entendido</button></div>
     </div>`;
@@ -2080,6 +2153,9 @@ function viewService(date, selId) {
   const canEdit = () => canEditList(svc());
   const canAdd = () => canEditList(svc());
   try { sessionStorage.setItem(LAST_KEY, date); } catch { /* sin almacenamiento */ }
+  let seenSaved = false;
+  // Al salir de la lista, queda anotado lo último que se vio.
+  viewSubs.push(() => { if (seenSaved) saveSeenItems(date, items, svc()); });
 
   // Arriba: «Lista» (los cantos en cascada; al tocar uno se despliega todo lo suyo), «Chart» y
   // «Letra» (los dos últimos, a pantalla completa con los cantos en orden).
@@ -2391,10 +2467,16 @@ function viewService(date, selId) {
       // Se guarda cómo quedó la lista al enviarla: «Cancelar cambios» vuelve a esto.
       await busy(t.closest('[data-sendlist]'), api.saveService(date, { status: 'enviada', sentAt: Date.now(), sentBy: user.uid, sentSnap: listSnap(s) }));
       celebrate(again ? 'Cambios enviados' : '¡Lista enviada!');
-      // La primera vez les llega a los moderadores; los cambios, a todo el equipo.
+      // La primera vez les llega a los moderadores; los cambios, a todo el equipo, diciendo qué cambió.
+      let what = '';
+      if (again && s.sentSnap && Array.isArray(s.sentSnap.items)) {
+        const lines = diffList(s.sentSnap.items.map(({ _id, ...x }) => ({ ...x, id: _id })), items, s.sentSnap.svc || {}, s);
+        if (lines.length) what = ': ' + lines.slice(0, 3).map((t) => t.replace(/^\S+\s/, '')).join('; ') + (lines.length > 3 ? '…' : '');
+      }
+      const head = `${me.name} ${again ? 'cambió' : 'envió'} la lista del ${niceDate(date)}`;
       await notify(again ? 'todos' : 'moderadores', {
         kind: 'lista', link: `#/s/${date}`,
-        text: `${me.name} ${again ? 'cambió' : 'envió'} la lista del ${niceDate(date)}${s.leaderName ? ' (ministra ' + s.leaderName + ')' : ''} · ${items.length} canto${items.length === 1 ? '' : 's'}`,
+        text: (again && what ? head + what : `${head}${s.leaderName ? ' (ministra ' + s.leaderName + ')' : ''} · ${items.length} canto${items.length === 1 ? '' : 's'}`).slice(0, 290),
       });
       toast(again ? '✓ Cambios enviados a todo el equipo' : '✓ Lista enviada: les llegó a los moderadores');
       return;
@@ -2507,6 +2589,8 @@ function viewService(date, selId) {
     // Mantiene al día lo que se está escribiendo: solo se rehace el detalle si cambió algo de él.
     const before = JSON.stringify(items.find((x) => x.id === sel) || null);
     items = list;
+    // Lo que este teléfono vio al entrar (para que «Cambió la lista» diga qué cambió después).
+    if (!seenSaved) { seenSaved = true; saveSeenItems(date, items, svc()); }
     if (sel && !items.some((x) => x.id === sel)) sel = null;
     renderHead();
     renderList();
@@ -2583,21 +2667,92 @@ function viewSongs() {
     <h2 class="big" style="text-align:center;font-size:21px">Repertorio del equipo</h2>
     <div class="tabs" id="sgTabs">${Object.entries(CATS).map(([k, n]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${n} <span class="tab-n" data-n="${k}"></span></button>`).join('')}</div>
     <div id="sgLink"></div>
-    <div class="search" style="margin-bottom:16px"><span>🔍</span><input id="sgQ" placeholder="Buscar canto o autor…"></div>
+    <div class="sg-searchwrap">
+      <div class="search" style="margin-bottom:14px"><span>🔍</span><input id="sgQ" placeholder="Buscar canto o autor…"><button type="button" class="filt-btn" id="sgFilt" hidden aria-label="Filtrar por carpeta" aria-expanded="false"></button></div>
+      <div class="carp-pop" id="sgCarp" hidden></div>
+    </div>
     <div id="sgList"></div>
   </div>
   ${canCreate() ? `<button class="get" id="sgNew">＋ ${isMod() ? 'Nuevo canto' : 'Sugerir canto'}</button>` : ''}`;
+  // Filtro por carpeta: las carpetas que se arman en Letras del Temporizador (MeDios). Con una
+  // elegida se ven y se buscan solo sus cantos.
+  let carp = '';
+  try { carp = sessionStorage.getItem('cantos-carpeta') || ''; } catch { /* sin almacenamiento */ }
+  const isCatName = (n) => { const t = String(n || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(); return t === 'alabanza' || t === 'adoracion'; };
+  const carpetas = () => [...new Set(songs.map((s) => String(s.carpeta || '').trim()).filter((n) => n && !isCatName(n)))].sort((a, b) => a.localeCompare(b, 'es'));
+  // El botón de filtro (a la derecha del buscador) abre la lista de carpetas.
+  let carpSig = '';
+  function renderCarp() {
+    const list = carpetas();
+    if (carp && !list.includes(carp)) carp = '';
+    const sig = list.join('|') + '#' + carp + '#' + songs.length;
+    if (sig === carpSig) return;
+    carpSig = sig;
+    // Sin filtro: el ícono de filtro. Con una carpeta elegida: «✕ Quitar» (al tocarlo, se quita).
+    const fb = $('sgFilt');
+    fb.hidden = !list.length && !carp;
+    fb.classList.toggle('on', !!carp);
+    fb.innerHTML = carp
+      ? '<span class="fx">✕</span><span class="fl">Quitar</span>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></g><g fill="currentColor"><circle cx="9" cy="6" r="2.9"/><circle cx="15.5" cy="12" r="2.9"/><circle cx="8" cy="18" r="2.9"/></g></svg>';
+    fb.setAttribute('aria-label', carp ? `Quitar el filtro «${carp}»` : 'Filtrar por carpeta');
+    const count = (n) => songs.filter((s) => (s.carpeta || '') === n).length;
+    $('sgCarp').innerHTML = `<div class="carp-pop-h">Filtrar por carpeta</div>
+      ${list.map((n) => `<button type="button" data-carp="${esc(n)}" class="${carp === n ? 'on' : ''}"><svg class="fold" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>${esc(n)}</span><small>${count(n)}</small><i>${carp === n ? '✓' : ''}</i></button>`).join('')}
+      <div class="carp-sep"></div>
+      <button type="button" data-carp="" class="none${carp ? '' : ' on'}"><span>Sin filtro</span><i>${carp ? '' : '✓'}</i></button>`;
+    $('sgTabs').classList.toggle('dim', !!carp);
+    $('sgQ').placeholder = carp ? `Buscar en «${carp}»…` : 'Buscar canto o autor…';
+  }
+  const setPop = (open) => {
+    const pop = $('sgCarp');
+    if (open === !pop.hidden) return;
+    $('sgFilt').setAttribute('aria-expanded', String(open));
+    if (open) { pop.hidden = false; pop.classList.remove('closing'); void pop.offsetWidth; pop.classList.add('open'); return; }
+    pop.classList.remove('open'); pop.classList.add('closing');
+    setTimeout(() => { if (pop.classList.contains('closing')) { pop.hidden = true; pop.classList.remove('closing'); } }, 220);
+  };
+  $('sgFilt').onclick = (e) => {
+    e.stopPropagation();
+    haptic(5);
+    // Con filtro: el botón dice «✕ Quitar» y lo quita. Sin filtro: abre las carpetas.
+    if (carp) {
+      carp = '';
+      try { sessionStorage.setItem('cantos-carpeta', ''); } catch { /* sin almacenamiento */ }
+      setPop(false);
+      animTab = '';
+      render();
+      return;
+    }
+    setPop($('sgCarp').hidden);
+  };
+  $('sgCarp').onclick = (e) => {
+    const b = e.target.closest('[data-carp]');
+    if (!b) return;
+    carp = b.dataset.carp;
+    try { sessionStorage.setItem('cantos-carpeta', carp); } catch { /* sin almacenamiento */ }
+    haptic(5);
+    animTab = '';
+    setPop(false);
+    render();
+  };
+  // Tocar fuera de la lista la cierra.
+  const closePop = (e) => { if ($('sgCarp') && !e.target.closest('.sg-searchwrap')) setPop(false); };
+  document.addEventListener('click', closePop);
+  viewSubs.push(() => document.removeEventListener('click', closePop));
   const render = () => {
+    renderCarp();
     // Los agregados son los mismos cantos de Letras en el Temporizador.
     const st = api.tempoStatus ? api.tempoStatus() : 'nube';
     $('sgLink').innerHTML = `<div class="link-note ${st}"><span class="dot"></span><span>${st === 'ok' ? 'Compartidos con el <b>Temporizador</b>: lo que agrega un moderador aparece en Letras.' : st === 'off' ? 'El <b>Temporizador</b> no está abierto en la PC: se muestran los últimos cantos que se recibieron.' : st === 'buscando' ? 'Conectando con el <b>Temporizador</b>…' : 'Compartidos con el <b>Temporizador</b> por la nube.'}</span></div>`;
     Object.keys(CATS).forEach((k) => { const n = songs.filter((s) => catOf(s) === k).length; const el = document.querySelector(`[data-n="${k}"]`); if (el) el.textContent = n ? `· ${n}` : ''; });
     // Las sugerencias primero (para que los moderadores las vean), después por título.
-    const list = songs.filter((s) => catOf(s) === tab)
+    // Con una carpeta elegida: solo sus cantos (de los dos grupos); si no, el grupo de la pestaña.
+    const list = songs.filter((s) => (carp ? (s.carpeta || '') === carp : catOf(s) === tab))
       .filter((s) => !q || (s.title + ' ' + (s.author || '')).toLowerCase().includes(q))
       .sort((a, b) => (b.status === 'sugerido') - (a.status === 'sugerido') || (a.title || '').localeCompare(b.title || ''));
-    const enter = animTab !== tab;
-    animTab = tab;
+    const enter = animTab !== tab + carp;
+    animTab = tab + carp;
     $('sgList').innerHTML = list.map((s, i) => `<div class="ticket${s.status === 'sugerido' ? ' sug' : ''}${catOf(s) === 'adoracion' ? ' ador' : ''}${enter && i < 12 ? ' enter' : ''}" style="--i:${i}">
       <div class="top"><span class="badge"><small>TONO</small><b>${esc(s.key || '—')}</b></span><span class="t"><b>${esc(s.title)}</b><small>${esc(s.author || 'Autor sin indicar')}</small></span>
         ${isMod() ? `<button class="tk-edit" data-editsong="${s.id}" aria-label="Editar canto">✎</button>` : ''}</div>
@@ -2605,13 +2760,15 @@ function viewSongs() {
       <div class="bottom"><span class="ico">${ytId(s.youtube) ? '▶' : '♫'}</span><span class="grow">${s.status === 'sugerido' ? '💡 Sugerido por ' + esc(s.byName || '—') : sectionsOf(s.text).filter((x) => x.name).length + ' partes' + (s.chart ? ' · con chart' : '')}</span>
       ${s.status === 'sugerido' && isMod() ? `<button data-approve="${s.id}">Aprobar</button>` : ''}
       <button class="ghost" data-chart="${s.id}">Chart</button><button data-letra="${s.id}">Letra</button></div></div>`).join('')
-      || `<div class="empty">${q ? 'Sin resultados.' : `Aún no hay cantos de ${CATS[tab].toLowerCase()}.`}</div>`;
+      || `<div class="empty">${q ? (carp ? `Sin resultados en «${esc(carp)}».` : 'Sin resultados.') : carp ? `La carpeta «${esc(carp)}» no tiene cantos.` : `Aún no hay cantos de ${CATS[tab].toLowerCase()}.`}</div>`;
   };
   $('sgTabs').onclick = (e) => {
     const b = e.target.closest('[data-tab]');
     if (!b) return;
     tab = b.dataset.tab;
-    try { sessionStorage.setItem('cantos-grupo', tab); } catch { /* sin almacenamiento */ }
+    // Tocar Alabanza/Adoración vuelve a ver todo el grupo (quita el filtro de carpeta).
+    carp = '';
+    try { sessionStorage.setItem('cantos-grupo', tab); sessionStorage.setItem('cantos-carpeta', ''); } catch { /* sin almacenamiento */ }
     $('sgTabs').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
     render();
   };
