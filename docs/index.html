@@ -422,7 +422,39 @@
   button, .date-card, .song-card, .pick, .notif, .member.tap { transition: scale .18s var(--spring), background-color .2s, color .2s, box-shadow .2s, transform .25s var(--spring); }
   button:active, .member.tap:active { scale: .95; }
   .btn:active, .date-row:active, .notif:active, .pick:active { scale: .975; }
-  .btn, .get, .send button, .date-row, .notif, .pick, .member.tap, .ticket .bottom button { position: relative; overflow: hidden; }
+  .btn, .send button, .date-row, .notif, .pick, .member.tap, .ticket .bottom button { position: relative; overflow: hidden; }
+  /* «Nuevo canto» queda fijo abajo (antes esta regla lo dejaba al final de la lista). */
+  .get { overflow: hidden; }
+  #sgList { padding-bottom: 76px; }
+  /* Filtro por carpeta (las carpetas de Letras en MeDios): botón a la derecha del buscador que
+     abre la lista de carpetas */
+  .sg-searchwrap { position: relative; z-index: 30; } /* la lista de carpetas va encima de «Nuevo canto» */
+  .sg-searchwrap .search { align-items: center; }
+  /* Botón de filtro: cuadrado dentro del buscador (encaja con su alto); con filtro, «✕ Quitar» */
+  .filt-btn { flex: none; display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 38px; height: 38px; margin: 0; padding: 0 9px; border: 0; border-radius: 99px; background: var(--chip); color: var(--title); font: 800 12.5px var(--font); white-space: nowrap; transition: background .3s, color .3s, transform .2s var(--spring), box-shadow .3s, padding .3s; }
+  .filt-btn svg { width: 19px; height: 19px; display: block; }
+  .sg-searchwrap .search { padding-right: 6px; }
+  .filt-btn:active { transform: scale(.9); }
+  .filt-btn.on { padding: 0 11px; background: linear-gradient(135deg, #1d6f8a, #41aca4); color: #fff; box-shadow: 0 4px 12px rgba(65,172,164,.35); animation: filtOn .35s var(--spring); }
+  .filt-btn .fx { font-size: 13px; line-height: 1; }
+  @keyframes filtOn { from { transform: scale(.85); } }
+  .carp-pop .fold { width: 18px; height: 18px; flex: none; color: var(--muted); transition: color .2s; }
+  .carp-pop button.on .fold { color: #41aca4; }
+  .carp-sep { height: 1px; margin: 6px 8px; background: var(--line); }
+  .carp-pop button.none span { color: var(--muted); }
+  .carp-pop { position: absolute; right: 0; top: calc(100% - 8px); width: min(280px, 100%); max-height: 50vh; overflow-y: auto; padding: 8px; border-radius: 18px; background: var(--glass2); border: 1px solid var(--glass-line); box-shadow: var(--shadow2); -webkit-backdrop-filter: blur(22px); backdrop-filter: blur(22px); transform-origin: top right; opacity: 0; transform: translateY(-6px) scale(.96); }
+  .carp-pop.open { animation: popIn .32s cubic-bezier(.2,.9,.3,1.15) forwards; }
+  .carp-pop.closing { animation: popOut .2s ease forwards; }
+  @keyframes popIn { to { opacity: 1; transform: none; } }
+  @keyframes popOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-6px) scale(.96); } }
+  .carp-pop-h { padding: 6px 10px 8px; font-size: 12px; font-weight: 700; color: var(--muted); }
+  .carp-pop button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 11px 12px; border: 0; border-radius: 12px; background: none; color: var(--text); font: 600 14.5px var(--font); text-align: left; transition: background .2s; }
+  .carp-pop button span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .carp-pop button small { font-size: 12px; color: var(--muted); }
+  .carp-pop button i { font-style: normal; width: 16px; color: #41aca4; font-weight: 800; }
+  .carp-pop button:active { background: var(--chip); }
+  .carp-pop button.on { background: rgba(65,172,164,.16); }
+  .tabs.dim { opacity: .45; transition: opacity .3s; } /* que el último canto no quede debajo del botón */
   .ripple { position: absolute; border-radius: 50%; background: currentColor; opacity: .22; transform: scale(0); animation: ripple .6s ease-out forwards; pointer-events: none; }
   .btn .ripple, .get .ripple, .send button .ripple { background: #fff; opacity: .35; }
   @keyframes ripple { to { transform: scale(1); opacity: 0; } }
@@ -723,6 +755,9 @@
   .chg-ic { width: 58px; height: 58px; margin: 0 auto 10px; border-radius: 18px; display: grid; place-items: center; font-size: 28px; background: linear-gradient(135deg, var(--blue), var(--cyan)); box-shadow: 0 8px 20px rgba(31,111,209,.35); animation: pop .5s var(--spring) .1s both; }
   .chg-card h3 { margin: 0 0 6px; color: var(--title); font-size: 20px; }
   .chg-card p { margin: 0 0 10px; color: var(--text); line-height: 1.45; }
+  .chg-list { list-style: none; margin: 4px 0 10px; padding: 0; display: flex; flex-direction: column; gap: 6px; text-align: left; max-height: 40vh; overflow-y: auto; }
+  .chg-list li { padding: 8px 11px; border-radius: 12px; background: var(--glass); border: 1px solid var(--glass-line); font-size: 13.5px; line-height: 1.4; color: var(--text); animation: fadeUp .4s var(--ease) both; animation-delay: calc(.25s + var(--i, 0) * 70ms); }
+  .chg-list li.more { background: none; border: 0; padding: 2px 11px; color: var(--muted); font-size: 12.5px; }
   .chg-acts { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
   .chg-acts .btn { margin: 0; }
   /* AprendeMe */
