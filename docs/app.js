@@ -148,7 +148,7 @@ function demoBackend() {
   }
 
   // Marca la lista como cambiada (para ofrecer «Enviar cambios» si ya se había enviado).
-  const touch = (date) => { if (db.services[date]) db.services[date].changedAt = Date.now(); };
+  const touch = (date) => { if (db.services[date]) Object.assign(db.services[date], { changedAt: Date.now(), changedBy: 'demo' }); };
   return {
     demo: true,
     onAuth(cb) { authCb = cb; setTimeout(() => cb({ uid: 'demo', email: 'demo@ejemplo.com' }), 0); },
@@ -227,7 +227,8 @@ async function firebaseBackend() {
   const snapList = (snap) => snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   const CHUNK = 700000; // los archivos se guardan en trozos (Firestore admite 1 MB por documento)
   // srvAt (hora del servidor): las computadoras con el Temporizador bajan solo las listas que cambiaron.
-  const touch = (date) => F.updateDoc(D('services', date), { changedAt: Date.now(), srvAt: F.serverTimestamp() }).catch(() => {});
+  // changedBy: quién la cambió (para avisar a los demás con la ventana «Cambió la lista»).
+  const touch = (date) => F.updateDoc(D('services', date), { changedAt: Date.now(), changedBy: (auth.currentUser && auth.currentUser.uid) || '', srvAt: F.serverTimestamp() }).catch(() => {});
   return {
     demo: false,
     onAuth(cb) { A.onAuthStateChanged(auth, (u) => cb(u ? { uid: u.uid, email: u.email } : null)); },
@@ -285,7 +286,11 @@ async function firebaseBackend() {
       await F.disableNetwork(db);
       await F.enableNetwork(db);
     },
-    watchNotifications: (cb) => F.onSnapshot(F.query(C('notifications'), F.orderBy('at', 'desc'), F.limit(60)), (s) => cb(snapList(s)), () => cb([])),
+    // Solo los avisos para mí (a mi nombre, a todo el equipo o, si soy moderador, a los
+    // moderadores). Antes se pedían los últimos 60 de todo el equipo y los míos se quedaban fuera.
+    watchNotifications: (cb, to = []) => F.onSnapshot(
+      to.length ? F.query(C('notifications'), F.where('to', 'in', to.slice(0, 10))) : F.query(C('notifications'), F.orderBy('at', 'desc'), F.limit(60)),
+      (s) => cb(snapList(s).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 80)), () => cb([])),
     addNotification: (n) => F.addDoc(C('notifications'), { ...n, at: Date.now() }),
     watchComments: (date, item, cb) => F.onSnapshot(F.query(C('services', date, 'items', item, 'comments'), F.orderBy('at')), (s) => cb(snapList(s))),
     addComment: async (date, item, c) => (await F.addDoc(C('services', date, 'items', item, 'comments'), { ...c, at: Date.now() })).id,
@@ -426,7 +431,7 @@ const seenAt = () => { try { return Number(localStorage.getItem(SEEN_KEY) || 0);
 // hora; notifHidden = borrados uno por uno): así quedan borrados en todos sus teléfonos y no se
 // le borran a los demás.
 const notifHidden = (n) => !!me && ((me.notifCleared && n.at <= me.notifCleared) || (Array.isArray(me.notifHidden) && me.notifHidden.includes(n.id)));
-const forMe = (n) => (n.to === user.uid || (n.to === 'moderadores' && isMod())) && (api.demo || n.from !== user.uid) && !notifHidden(n);
+const forMe = (n) => (n.to === user.uid || n.to === 'todos' || (n.to === 'moderadores' && isMod())) && (api.demo || n.from !== user.uid) && !notifHidden(n);
 const myNotifs = () => (user ? notifs.filter(forMe) : []);
 const unread = () => myNotifs().filter((n) => n.at > seenAt()).length;
 const bellBadge = () => { const n = unread(); return n ? `<b>${n > 9 ? '9+' : n}</b>` : ''; };
@@ -458,6 +463,61 @@ function onNotifs(list) {
     toast(`${NOTIF_IC[n.kind] || '🔔'} ${n.text}`);
     systemNotify(n);
   });
+}
+// ---- Ventana «Cambió la lista»: cuando otra persona cambia una lista ya enviada, aparece una
+// ventana con la fecha, quién la cambió y un botón para verla. Los cambios llegan seguidos (varios
+// cantos a la vez): se espera a que terminen y se muestra una sola. ----
+const CHG_KEY = 'listas-cambios-visto';
+let chgTimer = null;
+let chgPending = new Map();
+function checkListChanges(list) {
+  if (!user) return;
+  let seen = null;
+  try { seen = JSON.parse(localStorage.getItem(CHG_KEY) || 'null'); } catch { /* sin almacenamiento */ }
+  const first = !seen;
+  seen = seen || {};
+  for (const s of list) {
+    if (!sent(s)) continue;
+    const at = Math.max(s.changedAt || 0, s.sentAt || 0);
+    if (!at) continue;
+    if (first || seen[s.date] == null) { seen[s.date] = at; continue; }
+    if (at <= seen[s.date]) continue;
+    seen[s.date] = at;
+    const by = (s.changedAt || 0) >= (s.sentAt || 0) ? s.changedBy : (s.sentBy || s.by);
+    if (by && by !== user.uid) chgPending.set(s.date, { date: s.date, by });
+  }
+  try { localStorage.setItem(CHG_KEY, JSON.stringify(seen)); } catch { /* sin almacenamiento */ }
+  if (!chgPending.size) return;
+  clearTimeout(chgTimer);
+  chgTimer = setTimeout(() => {
+    const all = [...chgPending.values()];
+    chgPending = new Map();
+    showChangePopup(all);
+  }, 2500);
+}
+function showChangePopup(list) {
+  const old = $('chgModal');
+  if (old) old.remove();
+  const main = list[list.length - 1];
+  const s = services.find((x) => x.date === main.date) || {};
+  const who = (allMembers[main.by] && allMembers[main.by].name) || 'Alguien del equipo';
+  const here = location.hash.startsWith('#/s/' + main.date);
+  const el = Object.assign(document.createElement('div'), { id: 'chgModal', className: 'chg-modal' });
+  el.innerHTML = `<div class="chg-card" role="dialog" aria-modal="true" aria-labelledby="chgT">
+      <div class="chg-ic">✏️</div>
+      <h3 id="chgT">Cambió la lista</h3>
+      <p><b>${esc(niceDate(main.date))}</b>${s.title ? ' · ' + esc(s.title) : ''}<br><span class="muted">La cambió ${esc(who)}${s.count != null ? ` · ${s.count} canto${s.count === 1 ? '' : 's'}` : ''}</span></p>
+      ${list.length > 1 ? `<p class="small muted">También cambiaron: ${list.slice(0, -1).map((x) => esc(niceDate(x.date))).join(', ')}</p>` : ''}
+      <div class="chg-acts">${here ? '' : '<button class="btn" data-chgsee>Ver la lista</button>'}<button class="btn ghost" data-chgok>Entendido</button></div>
+    </div>`;
+  document.body.appendChild(el);
+  haptic([15, 50, 15]);
+  requestAnimationFrame(() => el.classList.add('open'));
+  const close = () => { el.classList.remove('open'); el.classList.add('closing'); setTimeout(() => el.remove(), 320); };
+  el.onclick = (e) => {
+    if (e.target.closest('[data-chgsee]')) { close(); go('#/s/' + main.date); return; }
+    if (e.target.closest('[data-chgok]') || e.target === el) close();
+  };
 }
 // Aviso del sistema (la barra de notificaciones del teléfono) mientras la app está abierta.
 async function systemNotify(n) {
@@ -583,7 +643,7 @@ function renderTabbar() {
   if (!show) return;
   const h = location.hash.replace(/^#/, '') || '/';
   // Primera pestaña: Inicio (las fechas; desde ahí se crea o se continúa la lista).
-  const on = h === '/' || h === '/nueva' || h.startsWith('/s/') ? 'inicio' : h === '/cantos' ? 'cantos' : h === '/equipo' ? 'equipo' : h === '/cuenta' ? 'mas' : '';
+  const on = h === '/' || h === '/nueva' || h.startsWith('/s/') ? 'inicio' : h === '/cantos' ? 'cantos' : h === '/equipo' ? 'equipo' : h === '/cuenta' || h === '/aprende' ? 'mas' : '';
   $('tabbar').querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === on));
 }
 // La lista que estoy armando (la más próxima que aún no envío).
@@ -604,7 +664,7 @@ function openMore() {
   const t = theme();
   openSheet(`<h2>Más</h2>
     <button class="date-row" data-go="#/"><span class="d" style="font-size:20px">⌂</span><span class="t"><b>Inicio</b><small>Las fechas de las listas</small></span></button>
-    <button class="date-row" data-go="#/cuenta"><span class="d" style="font-size:20px">☺</span><span class="t"><b>Mi cuenta</b><small>Tu nombre e instalar la app</small></span></button>
+    <button class="date-row" data-go="#/aprende"><span class="d" style="font-size:20px">🎓</span><span class="t"><b>AprendeMe</b><small>Aprende a leer un chart paso a paso</small></span></button>
     <button class="date-row" id="mrDark" role="switch" aria-checked="${isDark()}"><span class="d" style="font-size:20px">☾</span><span class="t"><b>Modo oscuro</b><small>Tócalo para cambiar</small></span><span class="switch${isDark() ? ' on' : ''}"><i></i></span></button>
     <label class="l">Apariencia</label>
     <div class="tabs" id="mrTheme">${[['auto', 'Automático'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([k, n]) => `<button data-th="${k}" class="${t === k ? 'on' : ''}">${n}</button>`).join('')}</div>
@@ -708,6 +768,7 @@ function renderRoute() {
   if (h === '/cantos') return viewSongs();
   if (h === '/equipo') return viewTeam();
   if (h === '/cuenta') return viewAccount();
+  if (h === '/aprende') return viewLearn();
   return viewHome();
 }
 // Quién puede cambiar la lista de una fecha: el moderador, o quien la creó mientras no esté cerrada.
@@ -1078,9 +1139,13 @@ function viewHome() {
     const filt = (s) => !q || (niceDate(s.date) + ' ' + (s.title || '') + ' ' + (s.leaderName || '')).toLowerCase().includes(q);
     $('dates').innerHTML = up.filter(filt).map((s, i) => {
       const d = parseKey(s.date);
+      const job = offJobs.get(s.date);
+      const on = !!offPack(s.date);
+      // Interruptor «Offline»: encendido = la lista está descargada en el teléfono.
+      const sw = `<span class="off-sw${on ? ' on' : ''}${job ? ' busy' : ''}" data-offsw="${s.date}" role="switch" aria-checked="${on}" aria-label="Offline"><span class="track"><i></i></span><small>${job ? (job.total ? Math.round((job.done / job.total) * 100) + '%' : '…') : 'Offline'}</small></span>`;
       return `<button class="date-card${enter ? ' enter' : ''}" style="--i:${i}" data-open="${s.date}">${canEditList(s) ? `<span class="edit" data-edit="${s.date}" role="button" aria-label="Editar">✎</span>` : ''}
         <div class="img"><b>${d.getDate()}</b><span>${MONTHS[d.getMonth()]}</span></div>
-        <h4>${esc(s.title || niceDate(s.date))}</h4><small>${s.leaderName ? '🎤 ' + esc(s.leaderName) + '<br>' : ''}${DAYS[d.getDay()]} · ${s.count != null ? s.count + ' cantos · ' : ''}${statusPill(s)}</small></button>`;
+        <h4>${esc(s.title || niceDate(s.date))}</h4><small>${s.leaderName ? '🎤 ' + esc(s.leaderName) + '<br>' : ''}${DAYS[d.getDay()]} · ${s.count != null ? s.count + ' cantos · ' : ''}${statusPill(s)}</small>${sw}</button>`;
     }).join('') || (off ? '<div class="empty" style="flex:1">Sin internet y sin listas descargadas.<br>Con internet, abre una lista y toca «⬇ Modo offline».</div>'
       : '<div class="empty" style="flex:1">Aún no hay fechas. Crea la primera con «＋ Nueva lista».</div>');
     $('past').innerHTML = off ? '<div class="empty">Las listas anteriores se ven con internet.</div>' : past.filter(filt).slice(0, 8).map((s) => {
@@ -1101,6 +1166,8 @@ function viewHome() {
   </div>`;
   $('hmSearch').oninput = (e) => { q = e.target.value.trim().toLowerCase(); render(); };
   $('view').onclick = (e) => {
+    const osw = e.target.closest('[data-offsw]');
+    if (osw) { e.stopPropagation(); haptic(6); offToggleDate(osw.dataset.offsw, () => { if ($('dates')) render(); }); return; }
     const ed = e.target.closest('[data-edit]');
     if (ed) { e.stopPropagation(); editService(ed.dataset.edit); return; }
     const op = e.target.closest('[data-open]');
@@ -1430,6 +1497,36 @@ async function offDownload(date, items, onStep) {
   all[date] = { date, at: Date.now(), songs: ids, files: jobs.filter(([, f]) => !fail.includes(f.name || 'archivo')).map(([id, f]) => `${id}/${f.id}`) };
   offSave(all);
   return { total: jobs.length, fail };
+}
+// Interruptor «Offline» de las fechas en Inicio: enciende (descarga) o apaga (quita) esa lista.
+const offJobs = new Map(); // fecha -> { done, total } mientras se descarga
+async function offToggleDate(date, onChange) {
+  if (offJobs.has(date)) return;
+  if (offPack(date)) {
+    if (!confirm('¿Quitar la descarga de esta lista del teléfono?')) return;
+    await offRemove(date);
+    onChange();
+    toast('Descarga quitada');
+    return;
+  }
+  if (!navigator.onLine) { toast('Necesitas internet para descargarla'); return; }
+  offJobs.set(date, { done: 0, total: 0 });
+  onChange();
+  try {
+    const items = await new Promise((res) => {
+      let off = null, done = false;
+      off = api.watchItems(date, (l) => { if (done) return; done = true; res(l); setTimeout(() => off && off(), 0); });
+      if (done && off) off();
+    });
+    if (!items.length) toast('Esta lista aún no tiene cantos');
+    else {
+      const r = await offDownload(date, items, (d, t) => { offJobs.set(date, { done: d, total: t }); onChange(); });
+      toast(r.fail.length ? 'Descargada, pero faltaron archivos' : '✓ Descargada');
+      haptic(10);
+    }
+  } catch { toast('No se pudo descargar: revisa la conexión'); }
+  offJobs.delete(date);
+  onChange();
 }
 // Sin internet: en Inicio aparece «OFFLINE» bajo «ALABANZA» y solo las listas descargadas.
 // Al volver el internet, todo normal (Inicio se redibuja).
@@ -1929,13 +2026,50 @@ function viewService(date, selId) {
   $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/', compact: true })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 40px)">
     <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
     <div class="tabs view-sel" id="svView"><button data-vm="lista" class="on">☰ Lista</button><button data-vm="chart">🎼 Chart</button><button data-vm="letra">Aa Letra</button></div>
-    <div id="svOffline"></div>
     <div id="svSteps"></div>
     <div class="modes" id="svModes"></div>
     <div id="svNote"></div>
-    <div class="sec"><h3>Alabanzas <span class="muted small" id="svCount"></span></h3><button class="link" id="svAddTop">＋ Agregar</button></div>
+    <div class="sec"><h3>Alabanzas <span class="muted small" id="svCount"></span></h3><span class="sec-acts"><span id="svOffline"></span><button class="link" id="svAddTop">＋ Agregar</button></span></div>
     <div class="sv-list" id="svList"></div>
   </div>`;
+
+  // Cómo está la lista ahora (cantos y datos), para poder volver a ella.
+  const SNAP_SVC = ['title', 'note', 'leaderName', 'leader', 'time'];
+  function listSnap(s) {
+    const svcData = {};
+    SNAP_SVC.forEach((k) => { if (s[k] !== undefined) svcData[k] = s[k]; });
+    const clean = (o) => JSON.parse(JSON.stringify(o)); // sin valores vacíos que la nube no acepta
+    return { at: Date.now(), svc: svcData, items: items.map(({ id, ...rest }) => clean({ ...rest, _id: id })) };
+  }
+  // «Cancelar cambios»: la lista vuelve a como estaba cuando se envió (cantos, orden, tonos,
+  // notas y referencias) y ya no aparece como cambiada.
+  async function cancelChanges(btn) {
+    const s = svc();
+    const snap = s.sentSnap;
+    if (!snap || !Array.isArray(snap.items)) { toast('Esta lista no tiene una versión enviada guardada'); return; }
+    if (!confirm('¿Cancelar los cambios? La lista vuelve a como estaba cuando se envió.')) return;
+    const work = (async () => {
+      const want = new Map(snap.items.map((x) => [x._id, x]));
+      for (const it of items) if (!want.has(it.id)) await api.deleteItem(date, it.id);
+      for (const [id, x] of want) {
+        const { _id, ...data } = x;
+        const cur = items.find((i) => i.id === id);
+        if (!cur) { await api.addItem(date, data); continue; }
+        const patch = {};
+        for (const [k, v] of Object.entries(data)) if (JSON.stringify(cur[k]) !== JSON.stringify(v)) patch[k] = v;
+        for (const k of Object.keys(cur)) if (k !== 'id' && !(k in data) && cur[k] !== '' && cur[k] != null) patch[k] = '';
+        if (Object.keys(patch).length) await api.updateItem(date, id, patch);
+      }
+      // Que termine de anotarse cada cambio y luego se marca como «igual a lo enviado».
+      await wait(900);
+      await api.saveService(date, { ...snap.svc, sentAt: Date.now(), sentBy: user.uid });
+    })();
+    try {
+      await busy(btn, work);
+      haptic(10);
+      toast('↩ Listo: la lista quedó como estaba');
+    } catch (e) { toast(e && e.code === 'permission-denied' ? 'No tienes permiso para cambiar esta lista' : 'No se pudo deshacer: revisa la conexión'); }
+  }
 
   function renderHead() {
     const s = svc();
@@ -1950,7 +2084,7 @@ function viewService(date, selId) {
     const changed = sent(s) && s.changedAt && s.changedAt > (s.sentAt || 0);
     const sendBtn = !canSend || !items.length ? ''
       : !sent(s) ? '<button class="btn green" style="margin-top:10px" data-sendlist>📤 Enviar lista</button>'
-      : changed ? '<button class="btn" style="margin-top:10px" data-sendlist>📤 Enviar cambios</button>'
+      : changed ? `<div class="send-row"><button class="btn" data-sendlist>📤 Enviar cambios</button>${s.sentSnap ? '<button class="btn ghost" data-cancelchg>↩ Cancelar cambios</button>' : ''}</div>`
       : '<div class="small muted" style="margin-top:8px">✓ Los moderadores ya la recibieron. Si cambias algo, aquí podrás enviar los cambios.</div>';
     $('svNote').innerHTML = `<div class="field"><div class="lab">${esc(s.title || 'Servicio')}${s.leaderName ? ` · 🎤 ministra <b style="color:var(--title)">${esc(s.leaderName)}</b>` : ''}</div>${s.note ? `<div class="small">${esc(s.note)}</div>` : ''}
       ${sendBtn}</div>`;
@@ -2194,15 +2328,18 @@ function viewService(date, selId) {
     if (t.closest('[data-sendlist]')) {
       const s = svc();
       const again = sent(s);
-      await busy(t.closest('[data-sendlist]'), api.saveService(date, { status: 'enviada', sentAt: Date.now() }));
+      // Se guarda cómo quedó la lista al enviarla: «Cancelar cambios» vuelve a esto.
+      await busy(t.closest('[data-sendlist]'), api.saveService(date, { status: 'enviada', sentAt: Date.now(), sentBy: user.uid, sentSnap: listSnap(s) }));
       celebrate(again ? 'Cambios enviados' : '¡Lista enviada!');
-      await notify('moderadores', {
+      // La primera vez les llega a los moderadores; los cambios, a todo el equipo.
+      await notify(again ? 'todos' : 'moderadores', {
         kind: 'lista', link: `#/s/${date}`,
-        text: `${me.name} ${again ? 'actualizó' : 'envió'} la lista del ${niceDate(date)}${s.leaderName ? ' (ministra ' + s.leaderName + ')' : ''} · ${items.length} canto${items.length === 1 ? '' : 's'}`,
+        text: `${me.name} ${again ? 'cambió' : 'envió'} la lista del ${niceDate(date)}${s.leaderName ? ' (ministra ' + s.leaderName + ')' : ''} · ${items.length} canto${items.length === 1 ? '' : 's'}`,
       });
-      toast(again ? '✓ Cambios enviados a los moderadores' : '✓ Lista enviada: les llegó a los moderadores');
+      toast(again ? '✓ Cambios enviados a todo el equipo' : '✓ Lista enviada: les llegó a los moderadores');
       return;
     }
+    if (t.closest('[data-cancelchg]')) { cancelChanges(t.closest('[data-cancelchg]')); return; }
     if (t.closest('[data-editsvc]')) { editService(date); return; }
     if (t.closest('[data-delsvc]')) { confirmDeleteList(date); return; }
     const so = t.closest('[data-songopen]');
@@ -2267,15 +2404,15 @@ function viewService(date, selId) {
     if (!box) return;
     const pack = offPack(date);
     const missing = pack ? items.some((it) => it.songId && !pack.songs.includes(it.songId)) : false;
+    // Solo un botón de descarga: ⬇ (sin descargar), el avance mientras baja y ✓ cuando ya está.
     if (offBusy) {
       const pct = offBusy.total ? Math.round((offBusy.done / offBusy.total) * 100) : 0;
-      box.innerHTML = `<div class="off-card busy"><div class="off-row"><b>⬇ Descargando la lista…</b><span>${offBusy.total ? `${offBusy.done} de ${offBusy.total}` : 'preparando'}</span></div><div class="off-bar"><i style="width:${pct}%"></i></div></div>`;
+      box.innerHTML = `<button class="dl-btn busy" type="button" style="--p:${pct}%" aria-label="Descargando ${pct}%"><i></i>${pct}%</button>`;
       return;
     }
     box.innerHTML = pack
-      ? `<div class="off-card on"><div class="off-row"><b>✓ Lista disponible sin internet</b><button class="link small" data-offdel>Quitar</button></div>
-          <div class="small muted">${missing ? 'Hay cantos nuevos: se descargan solos con internet.' : 'Letra, charts y audios guardados hasta que pase la fecha. Los videos de YouTube necesitan internet.'}</div></div>`
-      : `<button class="off-btn" data-offget>⬇ Modo offline <small>Descarga letra, charts y audios para usarla sin internet</small></button>`;
+      ? `<button class="dl-btn on${missing ? ' new' : ''}" type="button" data-offdel aria-label="Descargada para usar sin internet">✓</button>`
+      : '<button class="dl-btn" type="button" data-offget aria-label="Descargar para usar sin internet">⬇</button>';
   }
   async function doOffline(silent) {
     if (offBusy || !items.length) { if (!items.length && !silent) toast('Esta lista aún no tiene cantos'); return; }
@@ -2286,7 +2423,7 @@ function viewService(date, selId) {
       const r = await offDownload(date, items, (done, total) => { offBusy = { done, total }; if (!offLeft) renderOffline(); });
       offBusy = null;
       if (!offLeft) renderOffline();
-      if (!silent) { if (r.fail.length) toast(`Descargada, pero faltó: ${r.fail.slice(0, 2).join(', ')}${r.fail.length > 2 ? '…' : ''}`); else { toast('✓ Lista descargada: ya funciona sin internet'); haptic(10); } }
+      if (!silent) { if (r.fail.length) toast(`Descargada, pero faltó: ${r.fail.slice(0, 2).join(', ')}${r.fail.length > 2 ? '…' : ''}`); else { toast('✓ Descargada'); haptic(10); } }
     } catch (e) {
       offBusy = null;
       if (!offLeft) renderOffline();
@@ -2296,7 +2433,7 @@ function viewService(date, selId) {
   $('svOffline').onclick = async (e) => {
     if (e.target.closest('[data-offget]')) { doOffline(false); return; }
     if (e.target.closest('[data-offdel]')) {
-      if (!confirm('¿Quitar la descarga de esta lista? Se borra del teléfono.')) return;
+      if (!confirm('Esta lista ya está descargada y funciona sin internet.\n¿Quitar la descarga del teléfono?')) return;
       await offRemove(date);
       renderOffline();
       toast('Descarga quitada');
@@ -2907,6 +3044,136 @@ function viewAccount() {
   };
   if (installEvent && $('acInstall')) { $('acInstall').hidden = false; $('acInstall').onclick = () => installEvent.prompt(); }
 }
+// ======================================================================================
+// AprendeMe: cómo se lee un chart, paso a paso (lecciones que se van marcando como vistas)
+// ======================================================================================
+const LEARN_KEY = 'aprendeme-visto';
+const chartBox = (txt) => `<pre class="lr-chart">${txt}</pre>`;
+const symTable = (rows) => `<div class="lr-syms">${rows.map(([s, t]) => `<div class="lr-sym"><b>${s}</b><span>${t}</span></div>`).join('')}</div>`;
+const LESSONS = [
+  {
+    t: '¿Qué es un chart?', ic: '📄',
+    b: `<p>Un <b>chart</b> es la hoja que usa la banda para tocar un canto. No lleva notas en pentagrama: lleva los <b>acordes</b>, el <b>orden de las partes</b> y señales para que todos toquen igual.</p>
+      <p>Se lee de <b>arriba hacia abajo</b> y de <b>izquierda a derecha</b>, como un libro. Cada parte del canto tiene su nombre y debajo sus acordes.</p>
+      ${chartBox('<i>CORO</i>\n| G    | D    | Em   | C    |')}
+      <p class="small muted">Aquí el coro tiene 4 compases: G, luego D, luego Em y luego C.</p>`,
+  },
+  {
+    t: 'El encabezado', ic: '🧾',
+    b: `<p>Arriba del chart está la información general. Léela <b>antes</b> de empezar:</p>
+      ${symTable([['Título / Autor', 'El nombre del canto y quién lo compuso.'], ['Key: G (Tono)', 'La tonalidad: el acorde “casa” del canto. En la app es el tono que ves en cada canto.'], ['♩ = 72 (BPM)', 'El tempo: cuántos golpes por minuto. 72 es lento, 120 es rápido.'], ['4/4 · 6/8 · 3/4', 'El compás: cuántos golpes tiene cada compás. 4/4 = cuatro golpes (el más común).'], ['Capo 2', 'Para guitarra: pon el capotraste en el traste 2.']])}
+      ${chartBox('Cantaré al Señor — Autor\nKey: G     ♩ = 72     4/4')}`,
+  },
+  {
+    t: 'Las partes del canto', ic: '🧩',
+    b: `<p>Cada canto se divide en partes. El chart las nombra (a veces con abreviaturas):</p>
+      ${symTable([['Intro (I)', 'Entrada instrumental antes de cantar.'], ['Verso (V1, V2)', 'Cuenta la historia; cambia la letra cada vez.'], ['Pre-coro (PC)', 'Prepara y sube la energía antes del coro.'], ['Coro (C)', 'La parte principal; se repite igual.'], ['Puente (P / B)', 'Parte diferente, normalmente una vez, cerca del final.'], ['Instrumental (Inst)', 'Solo música, sin voz.'], ['Tag', 'Una frase que se repite al final.'], ['Final (F / Outro)', 'Cómo termina el canto.']])}
+      <p><b>El orden</b> (roadmap) dice cómo se recorren las partes:</p>
+      ${chartBox('I · V1 · PC · C · V2 · PC · C · P · C · C · F')}`,
+  },
+  {
+    t: 'Los acordes: notas', ic: '🎹',
+    b: `<p>Cada acorde empieza con una <b>letra</b> que es su nota. Es el cifrado americano:</p>
+      ${symTable([['C', 'Do'], ['D', 'Re'], ['E', 'Mi'], ['F', 'Fa'], ['G', 'Sol'], ['A', 'La'], ['B', 'Si']])}
+      <p><b>#</b> (sostenido) sube medio tono: <b>F#</b> = Fa sostenido. <b>b</b> (bemol) baja medio tono: <b>Bb</b> = Si bemol.</p>`,
+  },
+  {
+    t: 'Tipos de acorde', ic: '🎸',
+    b: `<p>Lo que va <b>después</b> de la letra dice qué tipo de acorde es:</p>
+      ${symTable([['G', 'Mayor (sonido alegre). Solo la letra.'], ['Em', '“m” = menor (sonido más triste).'], ['D7', 'Séptima: le da tensión, pide ir al siguiente acorde.'], ['Cmaj7 · CΔ', 'Séptima mayor: suave y abierto.'], ['Dsus4 · Dsus2', 'Suspendido: sin la tercera; suena “en el aire”.'], ['Cadd9 · Cadd2', 'Se le agrega una nota (la 9.ª / 2.ª) para darle color.'], ['B° · Bdim', 'Disminuido: muy tenso, de paso.'], ['C+ · Caug', 'Aumentado: tenso, poco común.'], ['G5', 'Solo raíz y quinta (power chord), sin mayor ni menor.'], ['G/B', 'Acorde con bajo: toca G pero el bajo toca B.']])}`,
+  },
+  {
+    t: 'Compases y ritmo', ic: '🥁',
+    b: `<p>Las <b>barras</b> separan los compases. En 4/4 cada compás tiene 4 golpes:</p>
+      ${symTable([['|', 'Barra: separa un compás del otro.'], ['| G |', 'Un acorde todo el compás (4 golpes).'], ['| G  D |', 'Dos acordes: 2 golpes cada uno.'], ['/ / / /', 'Cada “/” es un golpe. G / / D = 3 golpes G y 1 de D.'], ['%', 'Repite el compás anterior.'], ['N.C.', 'Sin acorde: nadie toca (solo voz o silencio).'], ['◆ · Hit', 'Golpe: todos tocan juntos ese acorde y paran.'], ['> (acento)', 'Ese golpe va más fuerte.'], ['^ · Push', 'Anticipación: el acorde entra un poco antes del golpe.']])}
+      ${chartBox('| G  / / / | D  / C  / | Em / / / | %        |')}`,
+  },
+  {
+    t: 'Repeticiones y saltos', ic: '🔁',
+    b: `${symTable([['||:  :||', 'Repetir: toca lo que está entre los dos signos otra vez.'], ['x2 · x4', 'Cuántas veces se toca esa línea o parte.'], ['1.  2.', 'Casillas: la 1.ª vez toca la casilla 1; la 2.ª vez salta a la casilla 2.'], ['D.C.', 'Da Capo: vuelve al inicio.'], ['D.S. 𝄋', 'Dal Segno: vuelve al signo 𝄋.'], ['𝄌 Coda', 'Salta a la parte final marcada con 𝄌.'], ['Fine', 'Aquí termina el canto.']])}
+      ${chartBox('<i>CORO</i>  x2\n||: G  | D  | Em | C  :||')}`,
+  },
+  {
+    t: 'Dinámica y señales', ic: '🎚',
+    b: `<p>Dicen <b>cómo</b> tocar: más suave, más fuerte, quién toca.</p>
+      ${symTable([['p · mf · f', 'Suave · medio · fuerte.'], ['< (crescendo)', 'Ir subiendo poco a poco.'], ['> (decrescendo)', 'Ir bajando poco a poco.'], ['Build', 'Construir: crecer en energía.'], ['Down · Suave', 'Bajar: tocar sencillo y suave.'], ['Solo voz · A capella', 'Solo cantan, sin instrumentos.'], ['Todos · Full band', 'Entra toda la banda.'], ['Pad', 'Solo un fondo suave (teclado).'], ['Fade', 'Ir desapareciendo hasta terminar.']])}`,
+  },
+  {
+    t: 'Los números (Nashville)', ic: '🔢',
+    b: `<p>Algunos charts usan <b>números</b> en vez de letras. Cada número es un acorde según el tono. Así el mismo chart sirve en cualquier tono.</p>
+      ${symTable([['1', 'G (en tono de G)'], ['2m', 'Am'], ['3m', 'Bm'], ['4', 'C'], ['5', 'D'], ['6m', 'Em'], ['7°', 'F#°']])}
+      ${chartBox('Key: G\n| 1  | 5  | 6m | 4  |   =   | G | D | Em | C |')}
+      <p class="small muted">Si el tono cambia a A, el mismo 1 5 6m 4 sería A E F#m D.</p>`,
+  },
+  {
+    t: 'Practica: lee este chart', ic: '✅', practice: true,
+    b: `<p>Toca cada símbolo para ver qué significa. Léelo como lo haría la banda:</p>
+      <pre class="lr-chart lr-try">${[
+        ['Cantaré al Señor', 'El título del canto.'], '\n', ['Key: G', 'Tono: G (Sol). El acorde casa.'], '   ', ['♩=72', 'Tempo lento: 72 golpes por minuto.'], '   ', ['4/4', 'Cuatro golpes por compás.'], '\n\n',
+        ['INTRO', 'Entrada instrumental.'], '  ', ['x2', 'La intro se toca dos veces.'], '\n', ['|', 'Barra: empieza un compás.'], ' ', ['G', 'Sol mayor, todo el compás.'], '    ', ['|', 'Barra.'], ' ', ['Dsus4', 'Re suspendido 4: suena en el aire.'], ' ', ['|', 'Barra.'], '\n\n',
+        ['VERSO 1', 'Primera estrofa.'], '\n', ['|', 'Barra.'], ' ', ['G', 'Sol mayor.'], '  ', ['D/F#', 'Re con bajo en Fa#: el bajo baja de G a F#.'], ' ', ['|', 'Barra.'], ' ', ['Em', 'Mi menor.'], '   ', ['C', 'Do mayor.'], '  ', ['|', 'Barra.'], '\n\n',
+        ['CORO', 'La parte principal.'], ' ', ['Build', 'Crecer en energía: entra toda la banda.'], '\n', ['||:', 'Inicio de repetición.'], ' ', ['C', 'Do.'], ' ', ['|', 'Barra.'], ' ', ['G', 'Sol.'], ' ', ['|', 'Barra.'], ' ', ['D', 'Re.'], ' ', ['|', 'Barra.'], ' ', ['Em', 'Mi menor.'], ' ', [':||', 'Fin de repetición: vuelve al ||: una vez.'], '\n\n',
+        ['FINAL', 'Cómo termina.'], ' ', ['◆', 'Golpe: todos juntos y paran.'], ' ', ['G', 'Termina en Sol, el tono casa.'],
+      ].map((x) => (typeof x === 'string' ? x : `<button type="button" class="tk" data-tip="${esc(x[1])}">${esc(x[0])}</button>`)).join('')}</pre>
+      <div class="lr-tip" id="lrTip">👆 Toca un símbolo del chart</div>
+      <p><b>Paso a paso:</b> 1) Mira el tono y el tempo. 2) Sigue el orden de las partes. 3) Cuenta los golpes de cada compás. 4) Fíjate en repeticiones y señales. 5) Escucha a quien dirige.</p>`,
+  },
+];
+function viewLearn() {
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem(LEARN_KEY) || '[]') || []; } catch { /* sin almacenamiento */ }
+  const done = () => seen.filter((i) => i < LESSONS.length).length;
+  $('view').innerHTML = `${hero({ title: 'AprendeMe', back: '#/' })}<div class="sheetbody">
+    <div class="lr-intro"><b>Aprende a leer un chart</b><span>Paso a paso: toca cada lección. Iremos agregando más.</span>
+      <div class="lr-prog"><i id="lrBar"></i></div><small id="lrCount"></small></div>
+    <div class="lr-list">${LESSONS.map((l, i) => `<div class="lr-item${seen.includes(i) ? ' seen' : ''}" style="--i:${i}" data-li="${i}">
+        <button class="lr-head" type="button" data-lhead="${i}"><span class="lr-n">${seen.includes(i) ? '✓' : i + 1}</span><span class="lr-ic">${l.ic}</span><b>${esc(l.t)}</b><span class="sv-chev">›</span></button>
+        <div class="lr-body" hidden>${l.b}<button class="btn ghost lr-next" type="button" data-lnext="${i}">${i < LESSONS.length - 1 ? 'Entendido · siguiente →' : '✓ Terminé'}</button></div></div>`).join('')}</div>
+  </div>`;
+  const progress = () => {
+    const n = done();
+    $('lrBar').style.width = (n / LESSONS.length) * 100 + '%';
+    $('lrCount').textContent = `${n} de ${LESSONS.length} lecciones vistas`;
+  };
+  progress();
+  const toggle = (i, open) => {
+    const item = $('view').querySelector(`[data-li="${i}"]`);
+    if (!item) return;
+    const body = item.querySelector('.lr-body');
+    const willOpen = open != null ? open : body.hidden;
+    if (willOpen) {
+      $('view').querySelectorAll('.lr-item.open').forEach((x) => { if (x !== item) { x.classList.remove('open'); x.querySelector('.lr-body').hidden = true; } });
+      body.hidden = false; item.classList.add('open');
+      if (body.animate && !reducedMotion()) body.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: 'cubic-bezier(.25,.8,.25,1)' });
+      setTimeout(() => item.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }), 60);
+    } else { body.hidden = true; item.classList.remove('open'); }
+  };
+  $('view').onclick = (e) => {
+    const h = e.target.closest('[data-lhead]');
+    if (h) { toggle(Number(h.dataset.lhead)); haptic(5); return; }
+    const nx = e.target.closest('[data-lnext]');
+    if (nx) {
+      const i = Number(nx.dataset.lnext);
+      if (!seen.includes(i)) { seen.push(i); try { localStorage.setItem(LEARN_KEY, JSON.stringify(seen)); } catch { /* sin almacenamiento */ } }
+      const item = $('view').querySelector(`[data-li="${i}"]`);
+      item.classList.add('seen');
+      item.querySelector('.lr-n').textContent = '✓';
+      progress();
+      haptic(8);
+      if (i < LESSONS.length - 1) toggle(i + 1, true); else { toggle(i, false); celebrate('¡Ya sabes leer un chart!'); }
+      return;
+    }
+    const tk = e.target.closest('.tk');
+    if (tk) {
+      $('view').querySelectorAll('.tk.on').forEach((x) => x.classList.remove('on'));
+      tk.classList.add('on');
+      const tip = $('lrTip');
+      tip.innerHTML = `<b>${esc(tk.textContent)}</b> · ${esc(tk.dataset.tip)}`;
+      if (tip.animate && !reducedMotion()) tip.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 220 });
+      haptic(4);
+    }
+  };
+}
 let installEvent = null;
 addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; });
 
@@ -2958,11 +3225,12 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
       if (isMember() && !dataOff.length) {
         dataOff.push(api.watchServices((list) => {
           services = list; servicesLoaded = true; hideSplash();
+          checkListChanges(list);
           serviceListeners.forEach((f) => { try { f(); } catch (e) { console.warn(e); } });
           setTimeout(prefetchUpcoming, 2500); // los charts de la próxima lista, en segundo plano
         }));
         dataOff.push(api.watchSongs((list) => { songs = list; songListeners.forEach((f) => f()); }));
-        dataOff.push(api.watchNotifications(onNotifs));
+        dataOff.push(api.watchNotifications(onNotifs, [u.uid, 'todos', ...(m && m.role === 'moderador' ? ['moderadores'] : [])]));
         dataOff.push(api.watchMembers((list) => { allMembers = Object.fromEntries(list.map((x) => [x.id, x])); }));
         dataOff.push(onServices(renderTabbar));
       }
