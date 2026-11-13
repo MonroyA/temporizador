@@ -792,6 +792,8 @@ function route() {
   renderViewAsBar();
   scrollTo(0, 0);
   renderRoute();
+  // La app abrió de verdad (la pantalla de rescate ya no hace falta).
+  if (!user || (me && (!isMember() || servicesLoaded))) window.__appOk = true;
   animateView();
   // La bienvenida se va cuando ya hay algo que mostrar (en Inicio, cuando llegaron las listas).
   if (!user || !me || !isMember() || servicesLoaded) hideSplash();
@@ -3233,7 +3235,16 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
     }).catch(() => {});
     let hadCtrl = !!navigator.serviceWorker.controller;
     let reloading = false;
-    const reloadNow = () => { if (reloading) return; reloading = true; location.reload(); };
+    // Nunca más de 2 recargas seguidas en 30 s (si algo fallara, no se queda recargando).
+    const reloadNow = () => {
+      if (reloading) return;
+      let recent = [];
+      try { recent = JSON.parse(sessionStorage.getItem('listas-recargas') || '[]').filter((t) => Date.now() - t < 30000); } catch { /* sin almacenamiento */ }
+      if (recent.length >= 2) return;
+      try { sessionStorage.setItem('listas-recargas', JSON.stringify([...recent, Date.now()])); } catch { /* sin almacenamiento */ }
+      reloading = true;
+      location.reload();
+    };
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadCtrl) { hadCtrl = true; return; } // primera instalación: no hace falta
       // Si estás escribiendo algo, espera a que salgas de la app para no perderlo.
@@ -3266,7 +3277,7 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
       me = viewAs(keepHidden(m));
       if (isMember() && !dataOff.length) {
         dataOff.push(api.watchServices((list) => {
-          services = list; servicesLoaded = true; hideSplash();
+          services = list; servicesLoaded = true; hideSplash(); window.__appOk = true;
           checkListChanges(list);
           serviceListeners.forEach((f) => { try { f(); } catch (e) { console.warn(e); } });
           setTimeout(prefetchUpcoming, 2500); // los charts de la próxima lista, en segundo plano
