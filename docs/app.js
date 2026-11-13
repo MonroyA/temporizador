@@ -551,10 +551,14 @@ function showChangePopup(list) {
 }
 // Avisos con la app cerrada: si el teléfono ya dio permiso, se registra (una vez por sesión).
 let pushOk = null;
+let pushErr = '';
 async function setupPush(force) {
   if (!api || !api.enablePush || !('Notification' in window) || Notification.permission !== 'granted') return false;
   if (pushOk != null && !force) return pushOk;
-  try { pushOk = await api.enablePush(); } catch (e) { console.warn('push', e); pushOk = false; }
+  try {
+    pushOk = await api.enablePush();
+    pushErr = pushOk ? '' : 'Este navegador no permite avisos con la app cerrada.';
+  } catch (e) { console.warn('push', e); pushOk = false; pushErr = (e && (e.code ? e.code + ': ' : '') + (e.message || e)) || 'error desconocido'; }
   return pushOk;
 }
 // Aviso del sistema (la barra de notificaciones del teléfono) mientras la app está abierta.
@@ -592,7 +596,19 @@ function viewNotifs() {
       };
     } else if (Notification.permission === 'denied') {
       box.innerHTML = '<div class="hint" style="margin-bottom:12px">Los avisos están bloqueados para esta app. Actívalos en los ajustes del navegador.</div>';
-    } else box.innerHTML = '';
+    } else if (!api.enablePush || !VAPID_KEY) {
+      box.innerHTML = '';
+    } else {
+      // Permiso dado: se registra el teléfono y se muestra si quedó listo (o por qué no).
+      box.innerHTML = '<div class="push-st">⏳ Activando los avisos con la app cerrada…</div>';
+      setupPush(true).then((ok) => {
+        if (!$('ntPerm')) return;
+        $('ntPerm').innerHTML = ok
+          ? '<div class="push-st ok">✓ Este teléfono recibe avisos aunque la app esté cerrada</div>'
+          : `<div class="push-st bad"><b>No se pudieron activar los avisos con la app cerrada.</b><br>${ios && !standalone ? 'En iPhone: instala la app (Compartir › «Agregar a inicio») y ábrela desde su ícono.' : esc(pushErr || 'Error desconocido')}<button class="btn ghost" id="ntRetry" style="margin-top:8px">Intentar otra vez</button></div>`;
+        if ($('ntRetry')) $('ntRetry').onclick = () => perm();
+      });
+    }
   };
   perm();
   // Al salir de la pantalla, todo lo que se vio queda como leído.
