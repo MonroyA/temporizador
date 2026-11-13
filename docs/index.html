@@ -753,6 +753,10 @@
   .lr-try .tk { display: inline; padding: 1px 3px; margin: 0; border: 0; border-radius: 6px; background: rgba(111,227,242,.12); color: #fff; font: inherit; cursor: pointer; transition: background .2s, color .2s; }
   .lr-try .tk.on { background: #41aca4; color: #06202a; }
   .lr-tip { margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; background: var(--sky); color: var(--sky-text); font-size: 13.5px; }
+  .push-st { margin: 0 0 12px; padding: 10px 14px; border-radius: 14px; background: var(--sky); color: var(--sky-text); font-size: 13.5px; line-height: 1.45; animation: fadeUp .35s var(--ease) both; }
+  .push-st.ok { background: rgba(23,178,106,.14); color: var(--green); font-weight: 700; }
+  .push-st.bad { background: rgba(229,72,77,.12); color: var(--text); }
+  .push-st.bad b { color: var(--red); }
   /* ---- Rescate (si la app no abre) ---- */
   #rescue { position: fixed; inset: 0; z-index: 300; display: grid; place-items: center; padding: 24px; background: rgba(6,10,22,.85); }
   #rescue[hidden] { display: none !important; }
