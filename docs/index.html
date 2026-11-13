@@ -753,6 +753,16 @@
   .lr-try .tk { display: inline; padding: 1px 3px; margin: 0; border: 0; border-radius: 6px; background: rgba(111,227,242,.12); color: #fff; font: inherit; cursor: pointer; transition: background .2s, color .2s; }
   .lr-try .tk.on { background: #41aca4; color: #06202a; }
   .lr-tip { margin: 0 0 12px; padding: 10px 12px; border-radius: 12px; background: var(--sky); color: var(--sky-text); font-size: 13.5px; }
+  /* ---- Rescate (si la app no abre) ---- */
+  #rescue { position: fixed; inset: 0; z-index: 300; display: grid; place-items: center; padding: 24px; background: rgba(6,10,22,.85); }
+  #rescue[hidden] { display: none !important; }
+  .rs-card { width: 100%; max-width: 380px; padding: 22px 20px; border-radius: 24px; background: #141a2b; color: #e9eef8; text-align: center; box-shadow: 0 20px 50px rgba(0,0,0,.5); font: 14px/1.45 var(--font); }
+  .rs-ic { font-size: 34px; }
+  .rs-card h3 { margin: 6px 0; font-size: 19px; }
+  .rs-card p { margin: 0 0 10px; color: #b7c1d6; }
+  .rs-card pre { margin: 0 0 14px; padding: 10px; border-radius: 12px; background: #0b0e17; color: #ffb4b4; font-size: 11.5px; white-space: pre-wrap; text-align: left; max-height: 140px; overflow: auto; }
+  .rs-card button { display: block; width: 100%; margin-top: 8px; padding: 13px; border: 0; border-radius: 14px; background: #1f6fd1; color: #fff; font: 800 15px var(--font); }
+  .rs-card button.ghost { background: rgba(255,255,255,.1); }
   /* ---- Modo offline ---- */
   .off-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; margin: 0 0 12px; padding: 12px 14px; border-radius: 16px; border: 1.5px dashed var(--sky-text); background: var(--sky); color: var(--sky-text); font: 800 14.5px var(--font); text-align: left; }
   .off-btn small { font-weight: 500; font-size: 12px; color: var(--muted); }
@@ -849,6 +859,42 @@
   </div></nav>
   <div class="sheet-bg" id="sheetBg"><div class="sheet" id="sheet"></div></div>
   <div class="toast" id="toast"></div>
+  <!-- Rescate: si la app no termina de abrir en 10 s (un error, o una copia vieja guardada en el
+       teléfono), muestra qué pasó y un botón que borra la copia de la app (no los datos: esos
+       están en la nube) y la vuelve a bajar. Va aparte para que funcione aunque app.js falle. -->
+  <div id="rescue" hidden><div class="rs-card">
+    <div class="rs-ic">🛠</div><h3>La app no terminó de abrir</h3>
+    <p>Toca «Reparar y abrir»: se vuelve a bajar la app. Tus listas y cantos no se borran.</p>
+    <pre id="rescueErr"></pre>
+    <button type="button" id="rescueFix">Reparar y abrir</button>
+    <button type="button" id="rescueRetry" class="ghost">Intentar otra vez</button>
+  </div></div>
+  <script>
+    (function () {
+      var errs = [];
+      var note = function (m) { if (m && errs.length < 4) errs.push(String(m).slice(0, 300)); };
+      window.addEventListener('error', function (e) { note((e.message || 'Error') + (e.filename ? ' · ' + e.filename.split('/').pop() + ':' + e.lineno : '')); });
+      window.addEventListener('unhandledrejection', function (e) { var r = e.reason; note(r && (r.message || r.code) ? (r.code ? r.code + ': ' : '') + r.message : String(r)); });
+      function show() {
+        if (window.__appOk) return;
+        var box = document.getElementById('rescue');
+        document.getElementById('rescueErr').textContent = errs.length ? errs.join('\n') : 'No llegó ningún error (puede ser la conexión o una copia vieja de la app).';
+        box.hidden = false;
+      }
+      setTimeout(show, 10000);
+      document.getElementById('rescueRetry').onclick = function () { location.reload(); };
+      document.getElementById('rescueFix').onclick = function () {
+        this.textContent = 'Reparando…';
+        var jobs = [];
+        if ('serviceWorker' in navigator) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
+        if (window.caches) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.filter(function (k) { return k !== 'listas-archivos'; }).map(function (k) { return caches.delete(k); })); }));
+        // La copia local de la nube (se vuelve a llenar sola al abrir).
+        if (window.indexedDB && indexedDB.databases) jobs.push(indexedDB.databases().then(function (ds) { ds.forEach(function (d) { if (d.name && /^firestore\//.test(d.name)) indexedDB.deleteDatabase(d.name); }); }));
+        try { sessionStorage.removeItem('listas-recargas'); } catch (e) {}
+        Promise.all(jobs.map(function (p) { return p.catch(function () {}); })).then(function () { location.replace(location.pathname + '?r=' + Date.now()); });
+      };
+    })();
+  </script>
   <script type="module" src="app.js"></script>
 </body>
 </html>
