@@ -14,7 +14,82 @@ const uid8 = () => Date.now().toString(36) + Math.random().toString(36).slice(2,
 // (para probar cambios sin tocar la nube).
 const DEMO = !FIREBASE_CONFIG.apiKey || (new URLSearchParams(location.search).has('demo') && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
 
-function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2600); }
+// ---- Íconos de línea (minimalistas, mismo trazo en toda la app) ----
+// ic('nombre') devuelve el SVG; toma el color del texto donde va.
+const ICON_PATHS = {
+  bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
+  wifiOff: '<path d="M2 2l20 20"/><path d="M8.5 16.4a5 5 0 0 1 7 0M5 12.9a10 10 0 0 1 5.2-2.7M19 12.9a10 10 0 0 0-2.3-1.7M2 8.8a15 15 0 0 1 4.2-2.6M22 8.8A15 15 0 0 0 11.1 5"/><path d="M12 20h.01"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01"/>',
+  message: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  music: '<path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2A6.5 6.5 0 0 1 21.5 20"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  minus: '<path d="M5 12h14"/>',
+  pencil: '<path d="M17 3a2.8 2.8 0 0 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/>',
+  trash: '<path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  download: '<path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/>',
+  upload: '<path d="M12 21V9M7 14l5-5 5 5"/><path d="M5 3h14"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8"/><path d="M21 3v5h-5"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+  play: '<path d="M7 4.5v15l12-7.5Z"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  mic: '<rect x="9" y="2.5" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3.5"/>',
+  file: '<path d="M14 2.5H6.5a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V8Z"/><path d="M14 2.5V8h5.5M8.5 13h7M8.5 17h5"/>',
+  image: '<rect x="3" y="3" width="18" height="18" rx="2.5"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/>',
+  link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+  camera: '<path d="M14.5 4h-5L7.5 6.5H4.5a2 2 0 0 0-2 2V18a2 2 0 0 0 2 2h15a2 2 0 0 0 2-2V8.5a2 2 0 0 0-2-2h-3Z"/><circle cx="12" cy="13" r="3.5"/>',
+  zap: '<path d="M13 2 4 14h7l-1 8 9-12h-7Z"/>',
+  eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
+  check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
+  chevUp: '<path d="m6 15 6-6 6 6"/>',
+  chevDown: '<path d="m6 9 6 6 6-6"/>',
+  chevRight: '<path d="m9 6 6 6-6 6"/>',
+  note: '<path d="M15.5 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V8.5Z"/><path d="M15 3v6h6"/>',
+  hourglass: '<path d="M6 2h12M6 22h12M7 2v4a5 5 0 0 0 10 0V2M7 22v-4a5 5 0 0 1 10 0v4"/>',
+  bulb: '<path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2Z"/>',
+  feather: '<path d="M20.2 12.2A6 6 0 0 0 11.8 3.8L5 10.5V19h8.5Z"/><path d="M16 8 2 22M17.5 15H9"/>',
+  sparkles: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8Z"/><path d="M19 3v4M17 5h4M5 17v4M3 19h4"/>',
+  score: '<path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/><path d="M9 10l10-2"/>',
+  type: '<path d="M4 7V5h16v2M9 19h6M12 5v14"/>',
+  heading: '<path d="M4 6h16M4 12h10M4 18h7"/>',
+  puzzle: '<path d="M10 3h4v2.5a1.5 1.5 0 1 0 3 0V3h3v6h-2.5a1.5 1.5 0 1 0 0 3H20v6h-6v-2.5a1.5 1.5 0 1 0-3 0V18H4v-6h2.5a1.5 1.5 0 1 0 0-3H4V3h6Z"/>',
+  piano: '<rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M8 4v9M12 4v16M16 4v9M6.5 13H9.5M14.5 13H17.5"/>',
+  guitar: '<path d="m20 4-6.5 6.5"/><path d="m18 2 4 4"/><path d="M12.5 9.5a4 4 0 0 0-5.3.5c-1 1-1 2.4-.6 3.6L3 17.2A2.5 2.5 0 0 0 6.8 21l3.6-3.6c1.2.4 2.6.4 3.6-.6a4 4 0 0 0 .5-5.3"/><circle cx="10" cy="14" r="1"/>',
+  drum: '<ellipse cx="12" cy="9" rx="8" ry="3.5"/><path d="M4 9v7c0 1.9 3.6 3.5 8 3.5s8-1.6 8-3.5V9"/><path d="m8 2 3 5M16 2l-3 5"/>',
+  repeat: '<path d="m17 2 4 4-4 4"/><path d="M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 0 1-3 3H3"/>',
+  sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M2 14h4M10 8h4M18 16h4"/>',
+  hash: '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>',
+  target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1.2"/>',
+  pointer: '<path d="M9 11V4.5a1.5 1.5 0 0 1 3 0V10m0-1a1.5 1.5 0 0 1 3 0v2m0-1a1.5 1.5 0 0 1 3 0v4a6 6 0 0 1-6 6h-1a6 6 0 0 1-4.6-2.2L4 15.7a1.6 1.6 0 0 1 2.4-2.2L9 16"/>',
+  updown: '<path d="m8 4-4 4 4 4M4 8h16M16 20l4-4-4-4M20 16H4"/>',
+  wrench: '<path d="M14.7 6.3a4 4 0 0 0 5 5L21 13l-8 8a2.8 2.8 0 0 1-4-4l8-8Z" transform="rotate(0)"/><path d="M14.7 6.3 17 4"/>',
+  mapPin: '<path d="M12 22s7-6.2 7-12a7 7 0 0 0-14 0c0 5.8 7 12 7 12Z"/><circle cx="12" cy="10" r="2.5"/>',
+  flag: '<path d="M5 22V4M5 4h11l-2 4 2 4H5"/>',
+};
+const ic = (name, cls = '') => `<svg class="i${cls ? ' ' + cls : ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ''}</svg>`;
+
+// Aviso corto abajo. Si empieza con ✓ o ↩, ese símbolo se cambia por su ícono de línea.
+function toast(t) {
+  const el = $('toast');
+  const s = String(t == null ? '' : t);
+  const lead = { '✓': 'check', '↩': 'undo' }[s.charAt(0)];
+  el.innerHTML = lead ? ic(lead) + ' ' + esc(s.slice(1).trim()) : esc(s);
+  el.classList.add('on'); clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 2600);
+}
+// Renglón de «qué cambió»: el texto lleva un emoji al inicio (sirve en los avisos del teléfono);
+// en la app ese emoji se muestra como su ícono de línea.
+const CHG_IC = { '➕': 'plus', '➖': 'minus', '✏️': 'pencil', '↕️': 'updown', '📝': 'note', '🎤': 'mic', '🗒': 'note' };
+function chgLine(t) {
+  const k = Object.keys(CHG_IC).find((e) => String(t).startsWith(e));
+  return k ? `<span class="chg-i">${ic(CHG_IC[k])}</span>${esc(String(t).slice(k.length).trim())}` : esc(t);
+}
+// Aviso con un ícono propio (ya en HTML) y un texto.
+function toastIc(icon, text) { toast(''); $('toast').innerHTML = icon + ' ' + esc(text); }
 
 // ---- Fechas ----
 const pad = (n) => String(n).padStart(2, '0');
@@ -28,7 +103,7 @@ const today = () => keyOf(new Date());
 // Una lista está «en preparación» hasta que quien la hizo la envía; entonces les llega a los
 // moderadores. (Los estados antiguos «revision» y «listo» cuentan como enviada.)
 const sent = (s) => !!s && ['enviada', 'revision', 'listo'].includes(s.status);
-const statusPill = (s) => (sent(s) ? '<span class="status enviada">✓ Enviada</span>' : '<span class="status prep">En preparación</span>');
+const statusPill = (s) => (sent(s) ? `<span class="status enviada">${ic('check')} Enviada</span>` : '<span class="status prep">En preparación</span>');
 
 // ---- YouTube ----
 function ytId(url) {
@@ -156,7 +231,8 @@ function demoBackend() {
     demo: true,
     // ?demo&login: abre en la pantalla de entrar (para probar y diseñar el login).
     onAuth(cb) { authCb = cb; setTimeout(() => cb(new URLSearchParams(location.search).has('login') ? null : { uid: 'demo', email: 'demo@ejemplo.com' }), 0); },
-    async signIn() {}, async signUp() {}, async reset() {}, async signOut() { toast('En la demostración no se cierra sesión'); },
+    // En la demostración, «Entrar» entra con la cuenta de prueba (para ver la transición).
+    async signIn() { if (authCb) setTimeout(() => authCb({ uid: 'demo', email: 'demo@ejemplo.com' }), 300); }, async signUp() {}, async reset() {}, async signOut() { toast('En la demostración no se cierra sesión'); },
     setDemoRole(role) { db.members.demo = { ...db.members.demo, role }; save(); },
     // Copia: así se nota cuando cambia el rol (comparando antes y después).
     watchMember(id, cb) { return watch(() => cb(db.members[id] ? { ...db.members[id] } : null)); },
@@ -399,7 +475,7 @@ function renderViewAsBar() {
   let bar = $('viewAsBar');
   if (!r) { if (bar) bar.remove(); return; }
   if (!bar) { bar = Object.assign(document.createElement('div'), { id: 'viewAsBar' }); document.body.appendChild(bar); }
-  bar.innerHTML = `<span>👁 Como <b>${esc(ROLES[r].toLowerCase())}</b></span><button type="button" id="viewAsBack">Volver a moderador</button>`;
+  bar.innerHTML = `<span>${ic('eye')} Como <b>${esc(ROLES[r].toLowerCase())}</b></span><button type="button" id="viewAsBack">Volver a moderador</button>`;
   $('viewAsBack').onclick = () => { haptic(); setViewAs('moderador'); };
 }
 // «Seguir editando / Seguir viendo»: la última lista que abriste, a un toque desde otras pantallas.
@@ -448,7 +524,7 @@ function hero({ title = '', back = '', tall = false, compact = false } = {}) {
     (chip || (back ? `<button class="round" data-go="${back}" aria-label="Atrás">‹</button>` : '<span class="round ghost"></span>')) +
     (compact
       ? `<span class="brand-col"><span class="ctitle">${esc(title)}</span></span>`
-      : `<span class="brand-col"><button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio">${brandWord()}</button>${!navigator.onLine && (location.hash.replace(/^#/, '') || '/') === '/' ? '<span class="off-tag">📴 OFFLINE</span>' : ''}</span>`) +
+      : `<span class="brand-col"><button class="pill-logo al" data-go="#/" aria-label="Alabanza · inicio">${brandWord()}</button>${!navigator.onLine && (location.hash.replace(/^#/, '') || '/') === '/' ? '<span class="off-tag">' + ic('wifiOff') + ' OFFLINE</span>' : ''}</span>`) +
     (user && me && isMember() ? `<button class="round bell${unread() ? ' has' : ''}" data-go="#/avisos" aria-label="Avisos">${bellInner()}</button>` : '<span class="round ghost"></span>') + '</div>' +
     (title && !compact ? `<h1>${esc(title)}</h1>` : '') + '</div>';
 }
@@ -466,7 +542,7 @@ const forMe = (n) => (n.to === user.uid || n.to === 'todos' || (n.to === 'modera
 const myNotifs = () => (user ? notifs.filter(forMe) : []);
 const unread = () => myNotifs().filter((n) => n.at > seenAt()).length;
 const bellBadge = () => { const n = unread(); return n ? `<b>${n > 9 ? '9+' : n}</b>` : ''; };
-const bellInner = () => `<span class="bi">🔔</span>${bellBadge()}`;
+const bellInner = () => `<span class="bi">${ic('bell')}</span>${bellBadge()}`;
 // La campana se mece mientras haya avisos sin ver; con uno nuevo, suena fuerte y lanza una onda.
 let bellLast = -1;
 function updateBell(ring) {
@@ -478,7 +554,7 @@ function updateBell(ring) {
   });
   bellLast = n;
 }
-const NOTIF_IC = { lista: '📋', comentario: '💬', canto: '♫', equipo: '👤' };
+const NOTIF_IC = { lista: ic('list'), comentario: ic('message'), canto: ic('music'), equipo: ic('user') };
 function notify(to, data) {
   return Promise.resolve(api.addNotification({ to, ...data, from: user.uid, fromName: (me && me.name) || '' })).catch(() => {});
 }
@@ -491,7 +567,7 @@ function onNotifs(list) {
   updateBell(fresh.length > 0);
   if (fresh.length) haptic([20, 60, 20]);
   fresh.slice(0, 3).forEach((n) => {
-    toast(`${NOTIF_IC[n.kind] || '🔔'} ${n.text}`);
+    toastIc(NOTIF_IC[n.kind] || ic('bell'), n.text);
     systemNotify(n);
   });
 }
@@ -607,10 +683,10 @@ function showChangePopup(list, lines = []) {
   const shown = lines.slice(0, 6);
   const el = Object.assign(document.createElement('div'), { id: 'chgModal', className: 'chg-modal' });
   el.innerHTML = `<div class="chg-card" role="dialog" aria-modal="true" aria-labelledby="chgT">
-      <div class="chg-ic">✏️</div>
+      <div class="chg-ic">${ic('pencil')}</div>
       <h3 id="chgT">Cambió la lista</h3>
       <p><b>${esc(niceDate(main.date))}</b>${s.title ? ' · ' + esc(s.title) : ''}<br><span class="muted">La cambió ${esc(who)}${s.count != null ? ` · ${s.count} canto${s.count === 1 ? '' : 's'}` : ''}</span></p>
-      ${shown.length ? `<ul class="chg-list">${shown.map((t, k) => `<li style="--i:${k}">${esc(t)}</li>`).join('')}${lines.length > shown.length ? `<li class="more" style="--i:${shown.length}">y ${lines.length - shown.length} cambio${lines.length - shown.length === 1 ? '' : 's'} más</li>` : ''}</ul>` : '<p class="small muted">Abre la lista para ver los cambios.</p>'}
+      ${shown.length ? `<ul class="chg-list">${shown.map((t, k) => `<li style="--i:${k}">${chgLine(t)}</li>`).join('')}${lines.length > shown.length ? `<li class="more" style="--i:${shown.length}">y ${lines.length - shown.length} cambio${lines.length - shown.length === 1 ? '' : 's'} más</li>` : ''}</ul>` : '<p class="small muted">Abre la lista para ver los cambios.</p>'}
       ${list.length > 1 ? `<p class="small muted">También cambiaron: ${list.slice(0, -1).map((x) => esc(niceDate(x.date))).join(', ')}</p>` : ''}
       <div class="chg-acts">${here ? '' : '<button class="btn" data-chgsee>Ver la lista</button>'}<button class="btn ghost" data-chgok>Entendido</button></div>
     </div>`;
@@ -660,9 +736,9 @@ function viewNotifs() {
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
     const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
     if (!('Notification' in window)) {
-      box.innerHTML = `<div class="hint" style="margin-bottom:12px">${ios && !standalone ? 'Para recibir avisos en el iPhone, primero <b>instala la app</b> (Compartir › «Agregar a inicio») y ábrela desde su ícono.' : 'Este navegador no muestra avisos del sistema; los verás aquí y en la 🔔.'}</div>`;
+      box.innerHTML = `<div class="hint" style="margin-bottom:12px">${ios && !standalone ? 'Para recibir avisos en el iPhone, primero <b>instala la app</b> (Compartir › «Agregar a inicio») y ábrela desde su ícono.' : 'Este navegador no muestra avisos del sistema; los verás aquí y en la campana.'}</div>`;
     } else if (Notification.permission === 'default') {
-      box.innerHTML = '<button class="btn" id="ntAsk" style="margin-bottom:12px">🔔 Activar avisos en este teléfono</button>';
+      box.innerHTML = '<button class="btn" id="ntAsk" style="margin-bottom:12px">' + ic('bell') + ' Activar avisos en este teléfono</button>';
       $('ntAsk').onclick = async () => {
         await Notification.requestPermission();
         if (Notification.permission === 'granted') { await setupPush(true); toast('✓ Avisos activados'); }
@@ -674,11 +750,11 @@ function viewNotifs() {
       box.innerHTML = '';
     } else {
       // Permiso dado: se registra el teléfono y se muestra si quedó listo (o por qué no).
-      box.innerHTML = '<div class="push-st">⏳ Activando los avisos con la app cerrada…</div>';
+      box.innerHTML = '<div class="push-st">' + ic('hourglass') + ' Activando los avisos con la app cerrada…</div>';
       setupPush(true).then((ok) => {
         if (!$('ntPerm')) return;
         $('ntPerm').innerHTML = ok
-          ? '<div class="push-st ok">✓ Este teléfono recibe avisos aunque la app esté cerrada</div>'
+          ? '<div class="push-st ok">' + ic('check') + ' Este teléfono recibe avisos aunque la app esté cerrada</div>'
           : `<div class="push-st bad"><b>No se pudieron activar los avisos con la app cerrada.</b><br>${ios && !standalone ? 'En iPhone: instala la app (Compartir › «Agregar a inicio») y ábrela desde su ícono.' : esc(pushErr || 'Error desconocido')}<button class="btn ghost" id="ntRetry" style="margin-top:8px">Intentar otra vez</button></div>`;
         if ($('ntRetry')) $('ntRetry').onclick = () => perm();
       });
@@ -694,8 +770,8 @@ function renderNotifs() {
   if (!box) return;
   const seen = shownSeen;
   const list = myNotifs();
-  box.innerHTML = (list.length ? `<div class="sec" style="margin-top:0"><h3>${list.length} aviso${list.length === 1 ? '' : 's'}</h3><button class="link" id="ntClear">🗑 Borrar todo</button></div>` : '')
-    + list.map((n) => `<div class="notif${n.at > seen ? ' new' : ''}" role="button" tabindex="0" data-go="${esc(n.link || '#/avisos')}" data-nid="${esc(n.id)}"><span class="ic">${NOTIF_IC[n.kind] || '🔔'}</span><span class="t"><b>${esc(n.text)}</b><small>${new Date(n.at).toLocaleString('es', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></span><button class="nt-del" data-delnotif="${esc(n.id)}" aria-label="Borrar este aviso">✕</button></div>`).join('')
+  box.innerHTML = (list.length ? `<div class="sec" style="margin-top:0"><h3>${list.length} aviso${list.length === 1 ? '' : 's'}</h3><button class="link" id="ntClear">${ic('trash')} Borrar todo</button></div>` : '')
+    + list.map((n) => `<div class="notif${n.at > seen ? ' new' : ''}" role="button" tabindex="0" data-go="${esc(n.link || '#/avisos')}" data-nid="${esc(n.id)}"><span class="ic">${NOTIF_IC[n.kind] || ic('bell')}</span><span class="t"><b>${esc(n.text)}</b><small>${new Date(n.at).toLocaleString('es', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></span><button class="nt-del" data-delnotif="${esc(n.id)}" aria-label="Borrar este aviso">${ic('x')}</button></div>`).join('')
     || `<div class="empty">Sin avisos.<br>${isMod() ? 'Aquí te llegará cuando alguien envíe su lista.' : 'Aquí verás cuando comenten tu lista.'}</div>`;
 }
 // Borrar avisos: el ✕ de cada uno (se va deslizando) o «Borrar todo».
@@ -775,8 +851,14 @@ function renderTabbar() {
   if (!show) return;
   const h = location.hash.replace(/^#/, '') || '/';
   // Primera pestaña: Inicio (las fechas; desde ahí se crea o se continúa la lista).
-  const on = h === '/' || h === '/nueva' || h.startsWith('/s/') ? 'inicio' : h === '/cantos' ? 'cantos' : h === '/equipo' ? 'equipo' : h === '/cuenta' || h === '/aprende' ? 'mas' : '';
-  $('tabbar').querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === on));
+  const on = h === '/' || h === '/nueva' || h.startsWith('/s/') ? 'inicio' : h === '/cantos' ? 'cantos' : h === '/equipo' ? 'equipo' : h === '/aprende' ? 'aprende' : '';
+  const btns = [...$('tabbar').querySelectorAll('[data-tab]')];
+  btns.forEach((b) => b.classList.toggle('on', b.dataset.tab === on));
+  // La píldora clara se desliza hasta la opción abierta (en Mi cuenta no se marca ninguna).
+  const i = btns.findIndex((b) => b.dataset.tab === on);
+  const inner = $('tabbar').querySelector('.in');
+  inner.classList.toggle('has-on', i >= 0);
+  if (i >= 0) inner.style.setProperty('--ti', i);
 }
 // La lista que estoy armando (la más próxima que aún no envío).
 const myDraft = () => (user && canCreate() ? services.find((s) => s.by === user.uid && !sent(s) && s.date >= today()) : null);
@@ -785,35 +867,15 @@ $('tabbar').addEventListener('click', (e) => {
   if (!b) return;
   closeSheet();
   haptic(6);
-  b.querySelector('i').classList.remove('bounce'); void b.offsetWidth; b.querySelector('i').classList.add('bounce');
-  if (b.dataset.tab !== 'mas') tabNav = true;
+  const ic = b.querySelector('svg');
+  ic.classList.remove('bounce'); void b.offsetWidth; ic.classList.add('bounce');
+  tabNav = true;
   if (b.dataset.tab === 'inicio') go('#/');
   if (b.dataset.tab === 'cantos') go('#/cantos');
   if (b.dataset.tab === 'equipo') go('#/equipo');
-  if (b.dataset.tab === 'mas') openMore();
+  if (b.dataset.tab === 'aprende') go('#/aprende');
 });
-function openMore() {
-  const t = theme();
-  openSheet(`<h2>Más</h2>
-    <button class="date-row" data-go="#/"><span class="d" style="font-size:20px">⌂</span><span class="t"><b>Inicio</b><small>Las fechas de las listas</small></span></button>
-    <button class="date-row" data-go="#/aprende"><span class="d" style="font-size:20px">🎓</span><span class="t"><b>AprendeMe</b><small>Aprende a leer un chart paso a paso</small></span></button>
-    <button class="date-row" id="mrDark" role="switch" aria-checked="${isDark()}"><span class="d" style="font-size:20px">☾</span><span class="t"><b>Modo oscuro</b><small>Tócalo para cambiar</small></span><span class="switch${isDark() ? ' on' : ''}"><i></i></span></button>
-    <label class="l">Apariencia</label>
-    <div class="tabs" id="mrTheme">${[['auto', 'Automático'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([k, n]) => `<button data-th="${k}" class="${t === k ? 'on' : ''}">${n}</button>`).join('')}</div>
-    <button class="btn ghost" id="mrClose">Cerrar</button>`, () => {
-    $('mrClose').onclick = () => closeSheet();
-    $('mrDark').onclick = (e) => {
-      const next = isDark() ? 'claro' : 'oscuro';
-      $('mrDark').querySelector('.switch').classList.toggle('on', next === 'oscuro');
-      $('mrDark').setAttribute('aria-checked', String(next === 'oscuro'));
-      $('mrTheme').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x.dataset.th === next));
-      haptic();
-      // El interruptor termina de moverse y entonces se abre el nuevo tema.
-      setTimeout(() => setTheme(next, e), 180);
-    };
-    $('mrTheme').onclick = (e) => { const b = e.target.closest('[data-th]'); if (!b) return; setTheme(b.dataset.th, e); $('mrTheme').querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); setTimeout(() => { if ($('mrDark')) $('mrDark').querySelector('.switch').classList.toggle('on', isDark()); }, 30); };
-  });
-}
+// («Más» con el tema oscuro se quitó: el tema está en Mi cuenta.)
 
 // ---- Tema claro / oscuro ----
 const theme = () => { try { return localStorage.getItem('listas-tema') || 'auto'; } catch { return 'auto'; } };
@@ -871,7 +933,36 @@ applyLite();
   requestAnimationFrame(step);
 })();
 
+// ---- Entrada a la app en cascada ----
+// La primera pantalla (al abrir con sesión, o justo después de entrar) aparece por partes, de
+// arriba abajo y suave: la cabecera, la hoja, cada bloque y al final la barra de abajo.
+let enterPending = true;  // falta la entrada en cascada (al abrir la app o al volver a entrar)
+let enterOnSplash = false; // se hará cuando la bienvenida empiece a irse
+function cascadeIn() {
+  if (reducedMotion()) return;
+  const v = $('view');
+  const parts = [];
+  const hero = v.querySelector(':scope > .hero');
+  if (hero) parts.push(hero);
+  const body = v.querySelector(':scope > .sheetbody');
+  if (body) parts.push(body, ...[...body.children].slice(0, 12));
+  if (!parts.length) parts.push(...[...v.children].slice(0, 12));
+  parts.forEach((el, i) => { el.style.setProperty('--ci', i); el.classList.add('cas'); });
+  const bar = $('tabbar');
+  if (!bar.hidden) bar.classList.add('cas-bar');
+  clearTimeout(cascadeIn.t);
+  cascadeIn.t = setTimeout(() => { parts.forEach((el) => el.classList.remove('cas')); bar.classList.remove('cas-bar'); }, 1900);
+}
 function route() {
+  // Recién entró (desde la pantalla de entrar): el login se desvanece y luego entra la app.
+  if (user && $('lgWrap') && !route.leaving && !$('lgWrap').classList.contains('lg-out') && !reducedMotion()) {
+    route.leaving = true;
+    $('lgWrap').classList.add('lg-out');
+    setTimeout(() => { route.leaving = false; route(); }, 480);
+    return;
+  }
+  if (route.leaving) return; // mientras se desvanece el login, nada más se dibuja
+  if (!user) enterPending = true;
   clearView();
   closeSheet();
   closeChartReader(true);
@@ -885,6 +976,18 @@ function route() {
   // La app abrió de verdad (la pantalla de rescate ya no hace falta).
   if (!user || (me && (!isMember() || servicesLoaded))) window.__appOk = true;
   animateView();
+  // Primera pantalla de la app: entra en cascada. Si todavía se ve la bienvenida, la cascada
+  // empieza justo cuando la bienvenida se desvanece (así no se pierde debajo de ella).
+  if (enterPending && user && me && isMember()) {
+    enterPending = false;
+    const sp = $('splash');
+    if (sp && !sp.classList.contains('out')) {
+      enterOnSplash = true;
+      // Mientras tanto la pantalla queda lista pero invisible (no se ve cortada por detrás).
+      $('view').classList.add('cas-wait');
+      $('tabbar').classList.add('cas-wait');
+    } else cascadeIn();
+  }
   // La bienvenida se va cuando ya hay algo que mostrar (en Inicio, cuando llegaron las listas).
   if (!user || !me || !isMember() || servicesLoaded) hideSplash();
 }
@@ -1181,7 +1284,17 @@ function hideSplash() {
   const sp = $('splash');
   if (!sp || sp.classList.contains('out')) return;
   const left = Math.max(0, 600 - (Date.now() - splashT0));
-  setTimeout(() => { sp.classList.add('out'); setTimeout(() => sp.remove(), 700); }, left);
+  setTimeout(() => {
+    sp.classList.add('out');
+    // La app entra en cascada mientras la bienvenida se desvanece.
+    if (enterOnSplash) {
+      enterOnSplash = false;
+      $('view').classList.remove('cas-wait');
+      $('tabbar').classList.remove('cas-wait');
+      cascadeIn();
+    }
+    setTimeout(() => sp.remove(), 700);
+  }, left);
 }
 // Si la red tarda, la bienvenida (con su animación) se queda hasta que haya algo que mostrar:
 // antes se quitaba a los 7 s y quedaba la pantalla vacía en negro o blanco. A los 7 s avisa que
@@ -1211,14 +1324,11 @@ const LG_ICONS = {
 function viewLogin() {
   let last = '';
   try { last = localStorage.getItem(LAST_EMAIL_KEY) || ''; } catch { /* sin almacenamiento */ }
-  $('view').innerHTML = `<div class="lg">
+  $('view').innerHTML = `<div class="lg" id="lgWrap">
     <div class="lg-sky" aria-hidden="true"><i></i><i></i><i></i></div>
-    <div class="lg-top">
-      <div class="lg-mark" aria-hidden="true"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></div>
-      <div class="lg-brand">LIS<span>T</span>AS</div>
-      <div class="lg-tag">Listas de alabanza</div>
-    </div>
+    <div class="lg-mark" aria-hidden="true"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></div>
     <form class="lg-card" id="lgForm" novalidate>
+      <div class="lg-head"><span class="lg-brand">LIS<span>T</span>AS</span><span class="lg-tag">Listas de alabanza</span></div>
       <h2>${last ? 'Qué bueno verte' : 'Bienvenido'}</h2>
       <p class="lg-sub">${last ? 'Entra para ver las listas del servicio.' : 'Entra con el correo que te dio tu moderador.'}</p>
       <label class="lg-field">
@@ -1240,6 +1350,23 @@ function viewLogin() {
     </form>
   </div>`;
   const form = $('lgForm');
+  // El teclado no tapa lo que escribes: se mide cuánto ocupa (visualViewport) y la tarjeta sube
+  // para quedar centrada en lo que queda visible; el campo elegido se asegura a la vista.
+  const wrap = $('lgWrap');
+  const vv = window.visualViewport;
+  const onKb = () => {
+    if (!wrap.isConnected) { if (vv) vv.removeEventListener('resize', onKb); return; }
+    const kb = vv ? Math.max(0, Math.round(innerHeight - vv.height - vv.offsetTop)) : 0;
+    wrap.style.setProperty('--kb', kb + 'px');
+    wrap.classList.toggle('typing', kb > 80);
+  };
+  if (vv) vv.addEventListener('resize', onKb);
+  form.addEventListener('focusin', (e) => {
+    if (!e.target.matches('input')) return;
+    wrap.classList.add('typing');
+    setTimeout(() => { onKb(); e.target.scrollIntoView({ block: 'center', behavior: 'smooth' }); }, 320);
+  });
+  form.addEventListener('focusout', () => setTimeout(() => { if (!form.contains(document.activeElement)) { onKb(); if (!vv || innerHeight - vv.height < 80) wrap.classList.remove('typing'); } }, 120));
   const setErr = (t) => { $('lgErr').textContent = t || ''; form.classList.toggle('has-err', !!t); };
   const err = (e) => { shake(form); setErr(authError(e)); };
   const vals = () => [$('lgEmail').value.trim(), $('lgPass').value];
@@ -1333,7 +1460,7 @@ function viewHome() {
     entered = true;
     // Si dejaste una lista a medias, aquí la continúas.
     const d = myDraft();
-    $('hmDraft').innerHTML = d ? `<button class="draft-card" data-open="${d.date}"><span class="ic">✎</span><span class="t"><b>Continuar mi lista</b><small>${esc(niceDate(d.date))} · ${esc(d.title || 'Servicio')} · aún no la envías</small></span><span class="go">›</span></button>` : '';
+    $('hmDraft').innerHTML = d ? `<button class="draft-card" data-open="${d.date}"><span class="ic">${ic('pencil')}</span><span class="t"><b>Continuar mi lista</b><small>${esc(niceDate(d.date))} · ${esc(d.title || 'Servicio')} · aún no la envías</small></span><span class="go">›</span></button>` : '';
     // Sin internet: solo las listas descargadas (modo offline). Con internet, todas.
     const off = !navigator.onLine;
     const up = services.filter((s) => s.date >= today() && (!off || offPack(s.date)));
@@ -1345,11 +1472,11 @@ function viewHome() {
       const on = !!offPack(s.date);
       // Interruptor «Offline»: encendido = la lista está descargada en el teléfono.
       const sw = `<span class="off-sw${on ? ' on' : ''}${job ? ' busy' : ''}" data-offsw="${s.date}" role="switch" aria-checked="${on}" aria-label="Offline"><span class="track"><i></i></span><small>${job ? (job.total ? Math.round((job.done / job.total) * 100) + '%' : '…') : 'Offline'}</small></span>`;
-      return `<button class="date-card${enter ? ' enter' : ''}" style="--i:${i}" data-open="${s.date}">${canEditList(s) ? `<span class="edit" data-edit="${s.date}" role="button" aria-label="Editar">✎</span>` : ''}
+      return `<button class="date-card${enter ? ' enter' : ''}" style="--i:${i}" data-open="${s.date}">${canEditList(s) ? `<span class="edit" data-edit="${s.date}" role="button" aria-label="Editar">${ic('pencil')}</span>` : ''}
         <div class="img"><b>${d.getDate()}</b><span>${MONTHS[d.getMonth()]}</span></div>
-        <h4>${esc(s.title || niceDate(s.date))}</h4><small>${s.leaderName ? '🎤 ' + esc(s.leaderName) + '<br>' : ''}${DAYS[d.getDay()]} · ${s.count != null ? s.count + ' cantos · ' : ''}${statusPill(s)}</small>${sw}</button>`;
-    }).join('') || (off ? '<div class="empty" style="flex:1">Sin internet y sin listas descargadas.<br>Con internet, abre una lista y toca «⬇ Modo offline».</div>'
-      : '<div class="empty" style="flex:1">Aún no hay fechas. Crea la primera con «＋ Nueva lista».</div>');
+        <h4>${esc(s.title || niceDate(s.date))}</h4><small>${s.leaderName ? ic('mic') + ' ' + esc(s.leaderName) + '<br>' : ''}${DAYS[d.getDay()]} · ${s.count != null ? s.count + ' cantos · ' : ''}${statusPill(s)}</small>${sw}</button>`;
+    }).join('') || (off ? '<div class="empty" style="flex:1">Sin internet y sin listas descargadas.<br>Con internet, abre una lista y toca «Modo offline».</div>'
+      : '<div class="empty" style="flex:1">Aún no hay fechas. Crea la primera con «Nueva lista».</div>');
     $('past').innerHTML = off ? '<div class="empty">Las listas anteriores se ven con internet.</div>' : past.filter(filt).slice(0, 8).map((s) => {
       const d = parseKey(s.date);
       return `<button class="date-row" data-open="${s.date}"><span class="d">${d.getDate()}<small>${MONTHS[d.getMonth()].toUpperCase()}</small></span><span class="t"><b>${esc(s.title || niceDate(s.date))}</b><small>${niceDate(s.date)}</small></span>${statusPill(s)}</button>`;
@@ -1359,9 +1486,9 @@ function viewHome() {
     <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
     <div class="hello">Hola, ${esc(me.name.split(' ')[0])}</div>
     <h2 class="big">Listas de alabanza</h2>
-    <div class="search"><span>🔍</span><input id="hmSearch" placeholder="Buscar fecha, servicio o quién ministra…"></div>
+    <div class="search"><span>${ic('search')}</span><input id="hmSearch" placeholder="Buscar fecha, servicio o quién ministra…"></div>
     <div id="hmDraft"></div>
-    <div class="sec"><h3>Próximas fechas</h3>${canCreate() ? '<button class="new-pill" data-go="#/nueva">＋ Nueva lista</button>' : ''}</div>
+    <div class="sec"><h3>Próximas fechas</h3>${canCreate() ? '<button class="new-pill" data-go="#/nueva">' + ic('plus') + ' Nueva lista</button>' : ''}</div>
     <div class="hscroll" id="dates"></div>
     <div class="sec"><h3>Anteriores</h3></div>
     <div id="past"></div>
@@ -1399,7 +1526,7 @@ const leaderOptions = (sel) => {
 // Eliminar una lista: se confirma en una hoja (con el nombre y la fecha) antes de borrarla.
 function confirmDeleteList(date) {
   const s = services.find((x) => x.date === date) || { date };
-  openSheet(`<div class="del-ic">🗑</div><h2 style="text-align:center">¿Eliminar esta lista?</h2>
+  openSheet(`<div class="del-ic">${ic('trash')}</div><h2 style="text-align:center">¿Eliminar esta lista?</h2>
     <p class="muted center" style="margin:0">${esc(s.title || 'Servicio')} · ${esc(niceDate(date))}${s.leaderName ? ' · ministra ' + esc(s.leaderName) : ''}<br>Se borran también sus cantos y comentarios. No se puede deshacer.</p>
     <button class="btn red" id="dlOk" style="background:var(--red);color:#fff">Sí, eliminar</button>
     <button class="btn ghost" id="dlNo">Cancelar</button>`, () => {
@@ -1419,7 +1546,7 @@ function editService(date) {
     <label class="l">Nombre del servicio</label><input id="esTitle" maxlength="60" value="${esc(s.title || '')}" placeholder="Culto general, Santa Cena…">
     <label class="l">Nota para el equipo</label><textarea id="esNote" maxlength="400" placeholder="Indicaciones generales">${esc(s.note || '')}</textarea>
     <button class="btn" id="esSave">Guardar</button>
-    <button class="btn ghost" id="esSongs">✎ Editar cantos y orden</button>
+    <button class="btn ghost" id="esSongs">${ic('pencil')} Editar cantos y orden</button>
     <button class="btn red" id="esDel">Borrar esta lista</button>
     <button class="btn ghost" id="esCancel">Cancelar</button>`, () => {
     loadMembers(() => { if ($('esLeader')) $('esLeader').innerHTML = leaderOptions(s.leader || s.by); });
@@ -1448,7 +1575,7 @@ function viewNew() {
     <label class="l" style="margin-top:12px">Fecha</label><input type="date" id="nwDate" value="${nextSunday()}">
     <label class="l" style="margin-top:12px">Servicio</label><input id="nwTitle" maxlength="60" value="Culto general" placeholder="Culto general, Santa Cena…">
     <div style="height:18px"></div>
-    <button class="btn" id="nwNext">Siguiente: elegir cantos →</button>
+    <button class="btn" id="nwNext">Siguiente: elegir cantos ${ic('arrowRight')}</button>
   </div>`;
   loadMembers(() => { if ($('nwLeader')) $('nwLeader').innerHTML = leaderOptions($('nwLeader').value || user.uid); });
   $('nwNext').onclick = async () => {
@@ -1480,11 +1607,11 @@ function viewPicker(date) {
     <h2 class="big">Elige los cantos</h2>
     <div class="sec" style="margin-top:4px"><h3>Tu lista <span class="muted small" id="pkCount"></span></h3></div>
     <div id="pkMine"></div>
-    <div class="sec"><h3>Agregar</h3><button class="link" id="pkNew">＋ Canto nuevo</button></div>
-    <div class="search" style="margin-bottom:12px"><span>🔍</span><input id="pkQ" placeholder="Buscar canto o autor…"></div>
+    <div class="sec"><h3>Agregar</h3><button class="link" id="pkNew">${ic('plus')} Canto nuevo</button></div>
+    <div class="search" style="margin-bottom:12px"><span>${ic('search')}</span><input id="pkQ" placeholder="Buscar canto o autor…"></div>
     <div id="pkAll"></div>
   </div>
-  <div class="next-bar"><button class="btn" id="pkNext">Siguiente: detalles →</button></div>`;
+  <div class="next-bar"><button class="btn" id="pkNext">Siguiente: detalles ${ic('arrowRight')}</button></div>`;
   // Lo último que tocaste se anima al volver a dibujarse (aparece, sube/baja o cambia ＋ por −).
   let fxKey = '', fxUntil = 0;
   const fx = (k) => { fxKey = k; fxUntil = Date.now() + 700; };
@@ -1497,15 +1624,15 @@ function viewPicker(date) {
       $('pkMine').innerHTML = items.map((it, i) => {
         const song = songById(it.songId) || {};
         return `<div class="pick${fxOn(it.songId) || fxOn(it.id) ? ' pop' : ''}"><span class="mine-num">${i + 1}</span><span class="t"><b>${esc(song.title || it.title || 'Canto')}</b><small>${esc(it.key || song.key || '—')}${song.author ? ' · ' + esc(song.author) : ''}</small></span>
-          <span class="order-btns"><button data-up="${it.id}" aria-label="Subir">▲</button><button data-down="${it.id}" aria-label="Bajar">▼</button></span>
-          <button class="pm rem" data-rem="${it.id}" aria-label="Quitar">−</button></div>`;
-      }).join('') || '<div class="empty">Aún no elegiste cantos. Búscalos abajo y toca <b>＋</b>.</div>';
+          <span class="order-btns"><button data-up="${it.id}" aria-label="Subir">${ic('chevUp')}</button><button data-down="${it.id}" aria-label="Bajar">${ic('chevDown')}</button></span>
+          <button class="pm rem" data-rem="${it.id}" aria-label="Quitar">${ic('minus')}</button></div>`;
+      }).join('') || '<div class="empty">Aún no elegiste cantos. Búscalos abajo y toca <b>+</b>.</div>';
     }
     $('pkAll').innerHTML = songs.filter((x) => !q || (x.title + ' ' + (x.author || '')).toLowerCase().includes(q)).map((x) => {
       const it = inList.get(x.id);
       return `<div class="pick"><span class="t"><b>${esc(x.title)}</b><small>${esc(x.key || '—')}${x.author ? ' · ' + esc(x.author) : ''}${x.status === 'sugerido' ? ' · sugerido' : ''}</small></span>
-        ${it ? `<button class="pm rem${fxOn(x.id) ? ' morph' : ''}" data-rem="${it.id}" aria-label="Quitar">−</button>` : `<button class="pm add${fxOn('out:' + x.id) ? ' morph' : ''}" data-add="${x.id}" aria-label="Agregar">＋</button>`}</div>`;
-    }).join('') || '<div class="empty">Sin resultados. Créalo con «＋ Canto nuevo».</div>';
+        ${it ? `<button class="pm rem${fxOn(x.id) ? ' morph' : ''}" data-rem="${it.id}" aria-label="Quitar">${ic('minus')}</button>` : `<button class="pm add${fxOn('out:' + x.id) ? ' morph' : ''}" data-add="${x.id}" aria-label="Agregar">${ic('plus')}</button>`}</div>`;
+    }).join('') || '<div class="empty">Sin resultados. Créalo con «Canto nuevo».</div>';
   };
   const move = async (id, dir) => {
     const i = items.findIndex((x) => x.id === id);
@@ -1786,7 +1913,7 @@ function showFile(fb, songId, f) {
     const offline = !navigator.onLine;
     fb.innerHTML = `<div class="cr-msg"><b>${esc(f.name || 'Archivo')}</b><br>${offline ? 'Sin conexión: este archivo todavía no está guardado en el teléfono.'
       : incomplete ? 'Este archivo no terminó de subirse. Si al reintentar sigue igual, súbelo otra vez desde el canto (Chart › Subir foto o PDF).'
-        : 'No se pudo mostrar este archivo.'}<br><button class="cr-retry" type="button">↻ Reintentar</button></div>`;
+        : 'No se pudo mostrar este archivo.'}<br><button class="cr-retry" type="button">${ic('refresh')} Reintentar</button></div>`;
     fb.querySelector('.cr-retry').onclick = async () => {
       fileMem.delete(f.id);
       try { const c = await caches.open(FILE_CACHE); await c.delete(new URL(`__archivo/${songId}/${f.id}`, location.href).href); } catch { /* sin copia */ }
@@ -1847,15 +1974,15 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
   try { lyrSize = Number(localStorage.getItem(LYR_SIZE_KEY)) || 20; } catch { /* sin almacenamiento */ }
   el.style.setProperty('--lyr', lyrSize + 'px');
   const chart = mode !== 'letra';
-  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div>${mode === 'letra' ? '<button class="cr-size" data-crsize="-2" aria-label="Letra más pequeña">A−</button><button class="cr-size" data-crsize="2" aria-label="Letra más grande">A+</button>' : '<button class="cr-inkbtn" data-crink aria-label="Marcar y escribir notas">✏️</button>'}<span class="cr-key"></span></div>
-    <div class="cr-stage"><button class="cr-zoomreset" data-crzoom1 hidden>↺ 100%</button></div>
+  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div>${mode === 'letra' ? '<button class="cr-size" data-crsize="-2" aria-label="Letra más pequeña">A−</button><button class="cr-size" data-crsize="2" aria-label="Letra más grande">A+</button>' : '<button class="cr-inkbtn" data-crink aria-label="Marcar y escribir notas">' + ic('pencil') + '</button>'}<span class="cr-key"></span></div>
+    <div class="cr-stage"><button class="cr-zoomreset" data-crzoom1 hidden>${ic('refresh')} 100%</button></div>
     ${chart ? `<div class="cr-tools" hidden>
       ${Object.entries(INK_TOOLS).map(([k, t], n) => `<button type="button" data-tool="${k}" class="${n ? '' : 'on'}" aria-label="${k}"><i style="background:${t.c}${t.hl ? ';opacity:.6;height:10px;border-radius:3px' : ''}"></i></button>`).join('')}
       <button type="button" data-tool="nota" aria-label="Escribir una nota"><b>T</b></button>
       <button type="button" data-tool="borrar" aria-label="Borrador">⌫</button>
-      <button type="button" data-inkundo aria-label="Deshacer">↶</button>
-      <button type="button" data-inkclear aria-label="Borrar todas las marcas de este canto">🗑</button>
-      <button type="button" class="done" data-crink aria-label="Terminar de marcar">✓</button>
+      <button type="button" data-inkundo aria-label="Deshacer">${ic('undo')}</button>
+      <button type="button" data-inkclear aria-label="Borrar todas las marcas de este canto">${ic('trash')}</button>
+      <button type="button" class="done" data-crink aria-label="Terminar de marcar">${ic('check')}</button>
     </div>` : ''}
     <div class="cr-nav"><button data-crgo="-1" aria-label="Anterior">‹</button><div class="cr-strip">${ids.map((id, i) => `<button data-crto="${i}">${i + 1}</button>`).join('')}</div><button data-crgo="1" aria-label="Siguiente">›</button></div>`;
   document.body.appendChild(el);
@@ -2230,11 +2357,11 @@ function viewService(date, selId) {
   // «Letra» (los dos últimos, a pantalla completa con los cantos en orden).
   $('view').innerHTML = `${hero({ title: niceDate(date), back: '#/', compact: true })}<div class="sheetbody" style="padding-bottom:calc(var(--nav-h) + 40px)">
     <button class="avatar-float" data-go="#/cuenta">${face(me)}</button>
-    <div class="tabs view-sel" id="svView"><button data-vm="lista" class="on">☰ Lista</button><button data-vm="chart">🎼 Chart</button><button data-vm="letra">Aa Letra</button></div>
+    <div class="tabs view-sel" id="svView"><button data-vm="lista" class="on">${ic('list')} Lista</button><button data-vm="chart">${ic('score')} Chart</button><button data-vm="letra">${ic('type')} Letra</button></div>
     <div id="svSteps"></div>
     <div class="modes" id="svModes"></div>
     <div id="svNote"></div>
-    <div class="sec"><h3>Alabanzas <span class="muted small" id="svCount"></span></h3><span class="sec-acts"><span id="svOffline"></span><button class="link" id="svAddTop">＋ Agregar</button></span></div>
+    <div class="sec"><h3>Alabanzas <span class="muted small" id="svCount"></span></h3><span class="sec-acts"><span id="svOffline"></span><button class="link" id="svAddTop">${ic('plus')} Agregar</button></span></div>
     <div class="sv-list" id="svList"></div>
   </div>`;
 
@@ -2283,15 +2410,15 @@ function viewService(date, selId) {
     $('svSteps').innerHTML = isOwner && canCreate() && !sent(s) ? stepsBar(3) + '<div class="hello" style="margin-bottom:8px">Paso 3 de 3 · toca cada alabanza para su tono, referencia y notas</div>' : '';
     $('svModes').innerHTML = statusPill(s)
       + (s.sentAt && sent(s) ? `<span class="small muted">${new Date(s.sentAt).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>` : '')
-      + (canEditList(s) ? '<span style="margin-left:auto;display:flex;gap:6px"><button class="mode plain" data-editsvc>✎ Editar</button><button class="mode plain danger" data-delsvc>🗑 Eliminar</button></span>' : '');
+      + (canEditList(s) ? '<span style="margin-left:auto;display:flex;gap:6px"><button class="mode plain" data-editsvc>' + ic('pencil') + ' Editar</button><button class="mode plain danger" data-delsvc>' + ic('trash') + ' Eliminar</button></span>' : '');
     // Quien arma la lista (o un moderador) la envía; llega como aviso a los moderadores.
     const canSend = (isOwner && canCreate()) || isMod();
     const changed = sent(s) && s.changedAt && s.changedAt > (s.sentAt || 0);
     const sendBtn = !canSend || !items.length ? ''
-      : !sent(s) ? '<button class="btn green" style="margin-top:10px" data-sendlist>📤 Enviar lista</button>'
-      : changed ? `<div class="send-row"><button class="btn" data-sendlist>📤 Enviar cambios</button>${s.sentSnap ? '<button class="btn ghost" data-cancelchg>↩ Cancelar cambios</button>' : ''}</div>`
-      : '<div class="small muted" style="margin-top:8px">✓ Los moderadores ya la recibieron. Si cambias algo, aquí podrás enviar los cambios.</div>';
-    $('svNote').innerHTML = `<div class="field"><div class="lab">${esc(s.title || 'Servicio')}${s.leaderName ? ` · 🎤 ministra <b style="color:var(--title)">${esc(s.leaderName)}</b>` : ''}</div>${s.note ? `<div class="small">${esc(s.note)}</div>` : ''}
+      : !sent(s) ? '<button class="btn green" style="margin-top:10px" data-sendlist>' + ic('send') + ' Enviar lista</button>'
+      : changed ? `<div class="send-row"><button class="btn" data-sendlist>${ic('send')} Enviar cambios</button>${s.sentSnap ? '<button class="btn ghost" data-cancelchg>' + ic('undo') + ' Cancelar cambios</button>' : ''}</div>`
+      : '<div class="small muted" style="margin-top:8px">' + ic('check') + ' Los moderadores ya la recibieron. Si cambias algo, aquí podrás enviar los cambios.</div>';
+    $('svNote').innerHTML = `<div class="field"><div class="lab">${esc(s.title || 'Servicio')}${s.leaderName ? ` · ${ic('mic')} ministra <b style="color:var(--title)">${esc(s.leaderName)}</b>` : ''}</div>${s.note ? `<div class="small">${esc(s.note)}</div>` : ''}
       ${sendBtn}</div>`;
   }
 
@@ -2305,7 +2432,7 @@ function viewService(date, selId) {
     // alabanza abierta recargaba su video (el «parpadeo»).
     const list = $('svList');
     if (!items.length) {
-      list.innerHTML = `<div class="empty">Esta lista aún no tiene cantos.${canAdd() ? '<br>Toca «＋ Agregar».' : ''}</div>`;
+      list.innerHTML = `<div class="empty">Esta lista aún no tiene cantos.${canAdd() ? '<br>Toca «Agregar».' : ''}</div>`;
       opened = null;
       return;
     }
@@ -2315,8 +2442,8 @@ function viewService(date, selId) {
     let after = null;
     items.forEach((it, i) => {
       const k = val(it, 'key');
-      const notes = it.notes ? `<span class="sv-tag">✎ ${esc(it.notes.slice(0, 40))}${it.notes.length > 40 ? '…' : ''}</span>` : '';
-      const head = `<span class="sv-num">${i + 1}</span><span class="sv-t"><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}${(it.refType || (it.audioId ? 'audio' : '')) === 'audio' && it.audioId ? ' · 🎙 audio' : ytId(val(it, 'youtube')) ? ' · ▶ video' : ''}</small>${notes}</span>
+      const notes = it.notes ? `<span class="sv-tag">${ic('note')} ${esc(it.notes.slice(0, 40))}${it.notes.length > 40 ? '…' : ''}</span>` : '';
+      const head = `<span class="sv-num">${i + 1}</span><span class="sv-t"><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}${(it.refType || (it.audioId ? 'audio' : '')) === 'audio' && it.audioId ? ' · ' + ic('mic') + ' audio' : ytId(val(it, 'youtube')) ? ' · ' + ic('play') + ' video' : ''}</small>${notes}</span>
           <span class="sv-key">${esc(k || '—')}</span><span class="sv-chev">›</span>`;
       let r = rows.get(it.id);
       if (!r) {
@@ -2392,8 +2519,8 @@ function viewService(date, selId) {
     const edit = canEdit(it);
     box.innerHTML = `<div id="dtAudioPlay">${it.audioId ? '<div class="small muted">Cargando el audio…</div>' : '<div class="small muted">Aún no hay un audio nuestro para este canto.</div>'}</div>
       ${edit ? `<div class="audio-acts">
-        <label class="btn ghost" style="flex:1">⬆ Subir audio<input type="file" id="dtAudioUp" accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.opus" hidden></label>
-        ${window.MediaRecorder ? '<button class="btn ghost" type="button" id="dtRec" style="flex:1">🎙 Grabar</button>' : ''}
+        <label class="btn ghost" style="flex:1">${ic('upload')} Subir audio<input type="file" id="dtAudioUp" accept="audio/*,.m4a,.mp3,.wav,.aac,.ogg,.opus" hidden></label>
+        ${window.MediaRecorder ? '<button class="btn ghost" type="button" id="dtRec" style="flex:1">' + ic('mic') + ' Grabar</button>' : ''}
       </div>${it.audioId ? '<button class="link small" type="button" id="dtAudioDel" style="color:var(--red)">Quitar este audio</button>' : ''}` : ''}`;
     if (it.audioId) {
       songFiles(it.songId).then((files) => {
@@ -2429,16 +2556,16 @@ function viewService(date, selId) {
       const chunks = [];
       recorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
       const t0 = Date.now();
-      const tick = setInterval(() => { const s = Math.round((Date.now() - t0) / 1000); if (btn.isConnected) btn.textContent = `⏹ Detener · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }, 500);
+      const tick = setInterval(() => { const s = Math.round((Date.now() - t0) / 1000); if (btn.isConnected) btn.innerHTML = `${ic('stop')} Detener · ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }, 500);
       btn.classList.add('rec');
-      btn.textContent = '⏹ Detener · 0:00';
+      btn.innerHTML = ic('stop') + ' Detener · 0:00';
       recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
       recorder.onstop = () => {
         clearInterval(tick);
         stream.getTracks().forEach((t) => t.stop());
         const type = (recorder.mimeType || mime || 'audio/webm').split(';')[0];
         recorder = null;
-        if (btn.isConnected) { btn.classList.remove('rec'); btn.textContent = '🎙 Grabar'; }
+        if (btn.isConnected) { btn.classList.remove('rec'); btn.innerHTML = ic('mic') + ' Grabar'; }
         const blob = new Blob(chunks, { type });
         const when = new Date().toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
         if (blob.size) save(blob, `Grabación de ${me.name} · ${when}.${type.includes('mp4') ? 'm4a' : 'webm'}`);
@@ -2471,18 +2598,18 @@ function viewService(date, selId) {
     const k = val(it, 'key');
     $('svDetail').innerHTML = `
       ${it.byName ? `<div class="small muted" style="margin:0 2px 8px">Agregado por ${esc(it.byName)}</div>` : ''}
-      <div class="field"><div class="lab">▶ Referencia</div>
-        <div class="tabs ref-tabs" id="dtRefTabs">${[['youtube', '▶ Video de YouTube'], ['audio', '🎙 Audio nuestro']].map(([k, n]) => `<button type="button" data-ref="${k}" class="${refTypeOf(it) === k ? 'on' : ''}">${n}</button>`).join('')}</div>
-        <div id="dtRefYt"${refTypeOf(it) === 'youtube' ? '' : ' hidden'}>${yt && !navigator.onLine ? '<div class="small muted">📴 El video de YouTube necesita internet.</div>' : yt ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>` : '<div class="small muted">Sin enlace de YouTube.</div>'}
+      <div class="field"><div class="lab">${ic('play')} Referencia</div>
+        <div class="tabs ref-tabs" id="dtRefTabs">${[['youtube', ic('play') + ' Video de YouTube'], ['audio', ic('mic') + ' Audio nuestro']].map(([k, n]) => `<button type="button" data-ref="${k}" class="${refTypeOf(it) === k ? 'on' : ''}">${n}</button>`).join('')}</div>
+        <div id="dtRefYt"${refTypeOf(it) === 'youtube' ? '' : ' hidden'}>${yt && !navigator.onLine ? '<div class="small muted">' + ic('wifiOff') + ' El video de YouTube necesita internet.</div>' : yt ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>` : '<div class="small muted">Sin enlace de YouTube.</div>'}
           ${canEdit(it) ? `<div class="send"><input id="dtYt" placeholder="Pega el enlace de YouTube" value="${esc(it.youtube || '')}"><button data-saveyt>Guardar</button></div>` : ''}</div>
         <div id="dtRefAudio"${refTypeOf(it) === 'audio' ? '' : ' hidden'}></div></div>
       <div class="field"><div class="lab">♪ Tonalidad <b style="color:var(--blue);margin-left:auto;font-size:15px">${esc(k || '—')}</b></div>
         ${canEdit(it) ? `<div class="keys">${KEYS.map((x) => `<button data-key="${x}" class="${k.replace('m', '') === x ? 'on' : ''}">${x}</button>`).join('')}</div>
         <div class="keyline"><button class="mode${/m$/.test(k) ? ' on' : ''}" data-minor>Menor</button><span class="small muted">${song.key && song.key !== k ? 'Original: ' + esc(song.key) : ''}</span></div>` : ''}</div>
-      <div class="field"><div class="lab">✎ Indicaciones</div>${canEdit(it) ? `<textarea id="dtNotes" placeholder="Quién empieza, repeticiones, dinámica…">${esc(it.notes || '')}</textarea><div class="send" style="justify-content:flex-end"><button data-savenotes>Guardar</button></div>` : `<div>${esc(it.notes || '—')}</div>`}</div>
-      <div class="field"><div class="lab">💬 Comentarios</div><div id="dtComments"><div class="small muted">Cargando…</div></div>
+      <div class="field"><div class="lab">${ic('note')} Indicaciones</div>${canEdit(it) ? `<textarea id="dtNotes" placeholder="Quién empieza, repeticiones, dinámica…">${esc(it.notes || '')}</textarea><div class="send" style="justify-content:flex-end"><button data-savenotes>Guardar</button></div>` : `<div>${esc(it.notes || '—')}</div>`}</div>
+      <div class="field"><div class="lab">${ic('message')} Comentarios</div><div id="dtComments"><div class="small muted">Cargando…</div></div>
         <div class="send"><input id="dtComment" maxlength="400" placeholder="Escribe un comentario…"><button data-comment>Enviar</button></div></div>
-      ${it.songId ? `<div class="field"><div class="lab">📄 Charts, partituras y letra</div><button class="btn ghost" data-go="#/cantos" data-songopen="${it.songId}">Abrir el canto</button></div>` : ''}
+      ${it.songId ? `<div class="field"><div class="lab">${ic('file')} Charts, partituras y letra</div><button class="btn ghost" data-go="#/cantos" data-songopen="${it.songId}">Abrir el canto</button></div>` : ''}
       ${canEditList(svc()) ? `<div class="reorder"><button data-move="-1">↑ Subir</button><button data-move="1">↓ Bajar</button></div>` : ''}
       ${canEdit(it) ? '<button class="btn red" style="margin-top:12px" data-delitem>Quitar de esta lista</button>' : ''}`;
     renderAudioRef(it);
@@ -2622,8 +2749,8 @@ function viewService(date, selId) {
       return;
     }
     box.innerHTML = pack
-      ? `<button class="dl-btn on${missing ? ' new' : ''}" type="button" data-offdel aria-label="Descargada para usar sin internet">✓</button>`
-      : '<button class="dl-btn" type="button" data-offget aria-label="Descargar para usar sin internet">⬇</button>';
+      ? `<button class="dl-btn on${missing ? ' new' : ''}" type="button" data-offdel aria-label="Descargada para usar sin internet">${ic('check')}</button>`
+      : '<button class="dl-btn" type="button" data-offget aria-label="Descargar para usar sin internet">' + ic('download') + '</button>';
   }
   async function doOffline(silent) {
     if (offBusy || !items.length) { if (!items.length && !silent) toast('Esta lista aún no tiene cantos'); return; }
@@ -2692,9 +2819,9 @@ function viewService(date, selId) {
 function pickSong(date, items) {
   let q = '';
   openSheet(`<h2>Agregar canto</h2>
-    <div class="search"><span>🔍</span><input id="pkQ" placeholder="Buscar en los cantos…"></div>
+    <div class="search"><span>${ic('search')}</span><input id="pkQ" placeholder="Buscar en los cantos…"></div>
     <div id="pkList" style="max-height:46vh;overflow:auto"></div>
-    <button class="btn dark" id="pkNew">＋ Canto nuevo</button>
+    <button class="btn dark" id="pkNew">${ic('plus')} Canto nuevo</button>
     <button class="btn ghost" id="pkCancel">Cancelar</button>`, () => {
     const render = () => {
       const inList = new Set(items.map((x) => x.songId));
@@ -2737,12 +2864,12 @@ function viewSongs() {
     <div class="tabs" id="sgTabs">${Object.entries(CATS).map(([k, n]) => `<button data-tab="${k}" class="${tab === k ? 'on' : ''}">${n} <span class="tab-n" data-n="${k}"></span></button>`).join('')}</div>
     <div id="sgLink"></div>
     <div class="sg-searchwrap">
-      <div class="search" style="margin-bottom:14px"><span>🔍</span><input id="sgQ" placeholder="Buscar canto o autor…"><button type="button" class="filt-btn" id="sgFilt" hidden aria-label="Filtrar por carpeta" aria-expanded="false"></button></div>
+      <div class="search" style="margin-bottom:14px"><span>${ic('search')}</span><input id="sgQ" placeholder="Buscar canto o autor…"><button type="button" class="filt-btn" id="sgFilt" hidden aria-label="Filtrar por carpeta" aria-expanded="false"></button></div>
       <div class="carp-pop" id="sgCarp" hidden></div>
     </div>
     <div id="sgList"></div>
   </div>
-  ${canCreate() ? `<button class="get" id="sgNew">＋ ${isMod() ? 'Nuevo canto' : 'Sugerir canto'}</button>` : ''}`;
+  ${canCreate() ? `<button class="get" id="sgNew">${ic('plus')} ${isMod() ? 'Nuevo canto' : 'Sugerir canto'}</button>` : ''}`;
   // Filtro por carpeta: las carpetas que se arman en Letras del Temporizador (MeDios). Con una
   // elegida se ven y se buscan solo sus cantos.
   let carp = '';
@@ -2763,14 +2890,14 @@ function viewSongs() {
     fb.hidden = !list.length && !carp; // solo aparece si hay carpetas con cantos
     fb.classList.toggle('on', !!carp);
     fb.innerHTML = carp
-      ? '<span class="fx">✕</span><span class="fl">Quitar</span>'
+      ? '<span class="fx">' + ic('x') + '</span><span class="fl">Quitar</span>'
       : '<svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></g><g fill="currentColor"><circle cx="9" cy="6" r="2.9"/><circle cx="15.5" cy="12" r="2.9"/><circle cx="8" cy="18" r="2.9"/></g></svg>';
     fb.setAttribute('aria-label', carp ? `Quitar el filtro «${carp}»` : 'Filtrar por carpeta');
     const count = (n) => songs.filter((s) => (s.carpeta || '') === n).length;
     $('sgCarp').innerHTML = `<div class="carp-pop-h">Filtrar por carpeta</div>
-      ${list.map((n) => `<button type="button" data-carp="${esc(n)}" class="${carp === n ? 'on' : ''}"><svg class="fold" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>${esc(n)}</span><small>${count(n)}</small><i>${carp === n ? '✓' : ''}</i></button>`).join('')}
+      ${list.map((n) => `<button type="button" data-carp="${esc(n)}" class="${carp === n ? 'on' : ''}"><svg class="fold" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>${esc(n)}</span><small>${count(n)}</small><i>${carp === n ? ic('check') : ''}</i></button>`).join('')}
       <div class="carp-sep"></div>
-      <button type="button" data-carp="" class="none${carp ? '' : ' on'}"><span>Sin filtro</span><i>${carp ? '' : '✓'}</i></button>`;
+      <button type="button" data-carp="" class="none${carp ? '' : ' on'}"><span>Sin filtro</span><i>${carp ? '' : ic('check')}</i></button>`;
     $('sgTabs').classList.toggle('dim', !!carp);
     $('sgQ').placeholder = carp ? `Buscar en «${carp}»…` : 'Buscar canto o autor…';
   }
@@ -2825,9 +2952,9 @@ function viewSongs() {
     animTab = tab + carp;
     $('sgList').innerHTML = list.map((s, i) => `<div class="ticket${s.status === 'sugerido' ? ' sug' : ''}${catOf(s) === 'adoracion' ? ' ador' : ''}${enter && i < 12 ? ' enter' : ''}" style="--i:${i}">
       <div class="top"><span class="badge"><small>TONO</small><b>${esc(s.key || '—')}</b></span><span class="t"><b>${esc(s.title)}</b><small>${esc(s.author || 'Autor sin indicar')}</small></span>
-        ${isMod() ? `<button class="tk-edit" data-editsong="${s.id}" aria-label="Editar canto">✎</button>` : ''}</div>
+        ${isMod() ? `<button class="tk-edit" data-editsong="${s.id}" aria-label="Editar canto">${ic('pencil')}</button>` : ''}</div>
       <div class="dash"></div>
-      <div class="bottom"><span class="ico">${ytId(s.youtube) ? '▶' : '♫'}</span><span class="grow">${s.status === 'sugerido' ? '💡 Sugerido por ' + esc(s.byName || '—') : sectionsOf(s.text).filter((x) => x.name).length + ' partes' + (s.chart ? ' · con chart' : '')}</span>
+      <div class="bottom"><span class="ico">${ytId(s.youtube) ? ic('play') : ic('music')}</span><span class="grow">${s.status === 'sugerido' ? ic('bulb') + ' Sugerido por ' + esc(s.byName || '—') : sectionsOf(s.text).filter((x) => x.name).length + ' partes' + (s.chart ? ' · con chart' : '')}</span>
       ${s.status === 'sugerido' && isMod() ? `<button data-approve="${s.id}">Aprobar</button>` : ''}
       <button class="ghost" data-chart="${s.id}">Chart</button><button data-letra="${s.id}">Letra</button></div></div>`).join('')
       || `<div class="empty">${q ? (carp ? `Sin resultados en «${esc(carp)}».` : 'Sin resultados.') : carp ? `La carpeta «${esc(carp)}» no tiene cantos.` : `Aún no hay cantos de ${CATS[tab].toLowerCase()}.`}</div>`;
@@ -2913,12 +3040,12 @@ function openSong(id, mode = 'letra') {
         ${x.body.split(/\n\s*\n/).filter((t) => t.trim()).map((t) => `<div class="slide-card k-${secKind(x.name)}">${esc(t.trim())}</div>`).join('')}</div>`).join('') : '<div class="empty">Este canto aún no tiene letra.</div>'}
     </div>
     <div id="soChart"${mode === 'chart' ? '' : ' hidden'}>
-      ${s.chart ? `<div class="field"><div class="lab">🎸 Acordes</div><div class="chart">${esc(s.chart)}</div></div>` : ''}
-      <div class="field"><div class="lab">📄 Fotos y PDF de partituras</div><div class="files" id="soFiles"><span class="small muted">Cargando…</span></div>
-        ${canCreate() ? '<label class="btn ghost" style="text-align:center;margin-top:10px">＋ Subir foto o PDF<input type="file" id="soUp" accept="image/*,application/pdf" hidden></label>' : ''}</div>
+      ${s.chart ? `<div class="field"><div class="lab">${ic('guitar')} Acordes</div><div class="chart">${esc(s.chart)}</div></div>` : ''}
+      <div class="field"><div class="lab">${ic('file')} Fotos y PDF de partituras</div><div class="files" id="soFiles"><span class="small muted">Cargando…</span></div>
+        ${canCreate() ? '<label class="btn ghost" style="text-align:center;margin-top:10px">' + ic('plus') + ' Subir foto o PDF<input type="file" id="soUp" accept="image/*,application/pdf" hidden></label>' : ''}</div>
     </div>
-    ${yt ? `<div class="field"><div class="lab">▶ Referencia</div><div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div></div>` : ''}
-    ${isMod() ? '<button class="btn" id="soEdit">✎ Editar canto</button>' : ''}
+    ${yt ? `<div class="field"><div class="lab">${ic('play')} Referencia</div><div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${yt}?rel=0&playsinline=1" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div></div>` : ''}
+    ${isMod() ? '<button class="btn" id="soEdit">' + ic('pencil') + ' Editar canto</button>' : ''}
     <button class="btn ghost" id="soClose">Cerrar</button>`, () => {
     sheetSubs.push(() => { if (filesOff) filesOff(); filesOff = null; });
     $('soClose').onclick = () => closeSheet();
@@ -2937,7 +3064,7 @@ function openSong(id, mode = 'letra') {
       prefetched.delete(id);
       prefetchSongs([id]);
       if (!$('soFiles')) return;
-      $('soFiles').innerHTML = files.map((f) => `<button class="file" data-file="${f.id}" data-type="${esc(f.type)}">${isAudio(f) ? '🎙' : f.type === 'application/pdf' ? '📕' : '🖼'}<span>${esc(f.name)}</span>${(isMod() || f.by === user.uid) ? `<i data-delfile="${f.id}">✕</i>` : ''}</button>`).join('') || '<span class="small muted">Aún no hay charts ni partituras.</span>';
+      $('soFiles').innerHTML = files.map((f) => `<button class="file" data-file="${f.id}" data-type="${esc(f.type)}">${isAudio(f) ? ic('mic') : f.type === 'application/pdf' ? ic('file') : ic('image')}<span>${esc(f.name)}</span>${(isMod() || f.by === user.uid) ? `<i data-delfile="${f.id}">${ic('x')}</i>` : ''}</button>`).join('') || '<span class="small muted">Aún no hay charts ni partituras.</span>';
     });
     $('soFiles').onclick = async (e) => {
       const del = e.target.closest('[data-delfile]');
@@ -3027,7 +3154,7 @@ function editSong(id, opts = {}) {
   let fresh = -1; // la parte recién agregada entra con animación
   openSheet(`<h2>${id ? 'Editar canto' : full ? 'Canto nuevo' : 'Sugerir canto'}</h2>
     <label class="l">¿Dónde va?</label>
-    <div class="tabs cat-pick" id="edCat">${Object.entries(CATS).map(([k, n]) => `<button type="button" data-cat="${k}" class="${(id ? catOf(s) : opts.category || 'alabanza') === k ? 'on' : ''}">${k === 'adoracion' ? '🕊' : '🎺'} ${n}</button>`).join('')}</div>
+    <div class="tabs cat-pick" id="edCat">${Object.entries(CATS).map(([k, n]) => `<button type="button" data-cat="${k}" class="${(id ? catOf(s) : opts.category || 'alabanza') === k ? 'on' : ''}">${k === 'adoracion' ? ic('feather') : ic('sparkles')} ${n}</button>`).join('')}</div>
     <label class="l">Título</label><input id="edTitle" maxlength="80" value="${esc(s.title)}" placeholder="Nombre del canto">
     <label class="l">Autor</label><input id="edAuthor" maxlength="80" value="${esc(s.author || '')}" placeholder="Opcional">
     <label class="l">Referencia de YouTube</label><input id="edYt" value="${esc(s.youtube || '')}" placeholder="https://youtube.com/watch?v=…">
@@ -3035,12 +3162,12 @@ function editSong(id, opts = {}) {
     <div class="keyline"><button class="mode${/m$/.test(s.key || '') ? ' on' : ''}" id="edMinor">Menor</button></div>
     ${full ? `<label class="l">Letra por partes</label>
     <div id="edSecs"></div>
-    <div class="sec-add" id="edAdd">${SECTIONS.map((n) => `<button data-add="${n}" class="k-${secKind(n)}">＋ ${n}</button>`).join('')}</div>
+    <div class="sec-add" id="edAdd">${SECTIONS.map((n) => `<button data-add="${n}" class="k-${secKind(n)}">${ic('plus')} ${n}</button>`).join('')}</div>
     <div class="emo-bar" id="edEmojis"><span>Agregar a la letra:</span>${['🎺', '🎻', '🎸', '🎤', '🎵'].map((x) => `<button type="button" data-emo="${x}">${x}</button>`).join('')}</div>
     <div class="split-row"><span>Diapositivas de</span><select id="edSplitN">${[2, 3, 4].map((n) => `<option value="${n}"${n === splitN() ? ' selected' : ''}>${n} líneas</option>`).join('')}</select><button type="button" class="link" id="edSplit">Dividir de nuevo</button></div>
     <div class="small muted">Como en el Temporizador: pega la letra y se divide sola en diapositivas. Si pegas la canción con «[Coro]», «[Verso 1]»…, se separa sola en sus partes.</div>
     <label class="l">Chart (acordes sobre la letra)</label><textarea id="edChart" class="chart" placeholder="G          D&#10;Grande eres Jehová">${esc(s.chart || '')}</textarea>
-    <div class="hint">🔗 Al guardar, el canto también queda en <b>Letras</b> del Temporizador. Las fotos y PDF de partituras se suben desde «Chart».</div>`
+    <div class="hint">${ic('link')} Al guardar, el canto también queda en <b>Letras</b> del Temporizador. Las fotos y PDF de partituras se suben desde «Chart».</div>`
     : '<div class="hint">Tu sugerencia les llega a los moderadores. Cuando la aprueben, ellos le agregan la letra por partes.</div>'}
     <div class="err" id="edErr"></div>
     <button class="btn" id="edSave">${id ? 'Guardar cambios' : full ? 'Agregar canto' : 'Enviar sugerencia'}</button>
@@ -3054,9 +3181,9 @@ function editSong(id, opts = {}) {
       // Verso 1, Verso 2…: se numeran solos si hay más de uno.
       $('edSecs').innerHTML = secs.map((x, i) => `<div class="sec-edit k-${secKind(x.name)}${i === fresh ? ' pop' : ''}" data-i="${i}">
         <div class="sec-top">${secChip(x.name)}<span class="grow"></span>
-          <button data-mv="-1" aria-label="Subir"${i === 0 ? ' disabled' : ''}>▲</button><button data-mv="1" aria-label="Bajar"${i === secs.length - 1 ? ' disabled' : ''}>▼</button><button data-del aria-label="Quitar parte">✕</button></div>
+          <button data-mv="-1" aria-label="Subir"${i === 0 ? ' disabled' : ''}>${ic('chevUp')}</button><button data-mv="1" aria-label="Bajar"${i === secs.length - 1 ? ' disabled' : ''}>${ic('chevDown')}</button><button data-del aria-label="Quitar parte">${ic('x')}</button></div>
         <textarea data-body rows="${Math.min(8, Math.max(3, x.body.split('\n').length + 1))}" placeholder="Escribe la letra de ${esc(x.name || 'esta parte')}…">${esc(x.body)}</textarea></div>`).join('')
-        || '<div class="empty" style="padding:12px">Toca una parte de abajo para empezar: ＋ Intro, ＋ Verso, ＋ Coro…</div>';
+        || '<div class="empty" style="padding:12px">Toca una parte de abajo para empezar: + Intro, + Verso, + Coro…</div>';
       fresh = -1;
     };
     const renumber = () => {
@@ -3098,7 +3225,7 @@ function editSong(id, opts = {}) {
         const b = e.target.closest('[data-emo]');
         if (!b) return;
         let ta = lastTa && lastTa.isConnected ? lastTa : $('edSecs').querySelector('[data-body]:last-of-type') || [...$('edSecs').querySelectorAll('[data-body]')].pop();
-        if (!ta) { toast('Primero agrega una parte (＋ Verso, ＋ Coro…)'); return; }
+        if (!ta) { toast('Primero agrega una parte (+ Verso, + Coro…)'); return; }
         const at = ta.selectionStart ?? ta.value.length, end = ta.selectionEnd ?? ta.value.length;
         const before = ta.value.slice(0, at);
         ta.setRangeText((before && !/\s$/.test(before) ? ' ' : '') + b.dataset.emo + ' ', at, end, 'end');
@@ -3169,7 +3296,7 @@ function viewTeam() {
   let members = [];
   $('view').innerHTML = `${hero({ title: 'Equipo', back: '#/' })}<div class="sheetbody"><h2 class="big" style="font-size:21px">${isMod() ? 'Quién puede usar la app' : 'El equipo'}</h2>
     <p class="muted small">${isMod() ? '<b>Moderador</b>: acceso a todo (pueden ser varios). <b>Colaborador</b>: hace su lista, la envía, sugiere cantos y comenta. <b>Participante</b>: solo ve las listas y comenta. Toca a alguien para cambiar su rol.' : 'Las personas que planean los cantos. Los permisos los dan los moderadores.'}</p>
-    ${isMod() ? '<button class="btn" id="tmNew" style="margin:6px 0 8px">＋ Crear usuario</button>' : ''}
+    ${isMod() ? '<button class="btn" id="tmNew" style="margin:6px 0 8px">' + ic('plus') + ' Crear usuario</button>' : ''}
     <div id="tmList"><div class="member skel"><span class="av"></span><span class="grow"><i></i><i class="s"></i></span></div><div class="member skel"><span class="av"></span><span class="grow"><i></i><i class="s"></i></span></div></div></div>`;
   const ORDER = { moderador: 0, colaborador: 1, participante: 2, pendiente: 3 };
   viewSubs.push(api.watchMembers((list) => {
@@ -3201,7 +3328,7 @@ function newUser() {
     <label class="l">Nombre</label><input id="nuName" maxlength="40" placeholder="Nombre de la persona">
     <label class="l">Qué hace</label><input id="nuInst" maxlength="40" placeholder="Opcional: voz, guitarra, batería…">
     <label class="l">Correo</label><input id="nuEmail" type="email" autocomplete="off" placeholder="correo@ejemplo.com">
-    <label class="l">Contraseña inicial</label><div class="send" style="margin-top:0"><input id="nuPass" autocomplete="new-password" value="${randomPass()}"><button id="nuGen" type="button" aria-label="Otra contraseña">↻</button></div>
+    <label class="l">Contraseña inicial</label><div class="send" style="margin-top:0"><input id="nuPass" autocomplete="new-password" value="${randomPass()}"><button id="nuGen" type="button" aria-label="Otra contraseña">${ic('refresh')}</button></div>
     <label class="l">Rol</label>${roleTabs('nuRole', role)}
     <div class="small muted" id="nuHelp">${ROLE_HELP[role]}</div>
     <div class="err" id="nuErr"></div>
@@ -3267,7 +3394,7 @@ function viewAccount() {
   const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
   $('view').innerHTML = `${hero({ title: 'Mi cuenta', back: '#/' })}<div class="sheetbody">
     <div class="profile">
-      <label class="photo-pick" aria-label="Cambiar foto"><span class="av big" id="acFace">${face(me)}</span><span class="cam">📷</span><input type="file" id="acPhoto" accept="image/*" hidden></label>
+      <label class="photo-pick" aria-label="Cambiar foto"><span class="av big" id="acFace">${face(me)}</span><span class="cam">${ic('camera')}</span><input type="file" id="acPhoto" accept="image/*" hidden></label>
       <b>${esc(me.name)}</b><div class="small muted">${esc(user.email || '')} · ${esc(ROLES[me.role] || me.role)}</div>
       <div class="row" style="justify-content:center;margin-top:6px"><label class="link" for="acPhoto">${me.photo ? 'Cambiar foto' : 'Poner una foto'}</label>${me.photo ? '<button class="link" id="acNoPhoto" style="color:var(--red)">Quitar</button>' : ''}</div>
     </div>
@@ -3277,7 +3404,7 @@ function viewAccount() {
     <label class="l small muted">Tu nombre</label><div class="send"><input id="acName" maxlength="40" value="${esc(me.name)}"><button id="acSave">Guardar</button></div>
     <label class="l" style="margin-top:14px">Apariencia</label>
     <div class="tabs" id="acTheme" style="margin-top:8px">${[['auto', 'Automático'], ['claro', 'Claro'], ['oscuro', 'Oscuro']].map(([k, n]) => `<button data-th="${k}" class="${theme() === k ? 'on' : ''}">${n}</button>`).join('')}</div>
-    <button class="date-row" id="acLite" role="switch" aria-checked="${isLite()}" style="margin-top:12px"><span class="d" style="font-size:20px">⚡</span><span class="t"><b>Modo ligero</b><small>Más rápido en teléfonos antiguos (menos efectos)${liteSetting() === 'auto1' ? ' · se activó solo' : ''}</small></span><span class="switch${isLite() ? ' on' : ''}"><i></i></span></button>
+    <button class="date-row" id="acLite" role="switch" aria-checked="${isLite()}" style="margin-top:12px"><span class="d">${ic('zap')}</span><span class="t"><b>Modo ligero</b><small>Más rápido en teléfonos antiguos (menos efectos)${liteSetting() === 'auto1' ? ' · se activó solo' : ''}</small></span><span class="switch${isLite() ? ' on' : ''}"><i></i></span></button>
     ${standalone ? '' : `<div class="hint" style="margin-top:14px"><b>Instálala en tu teléfono</b><br>${ios ? 'En Safari toca <b>Compartir</b> (□↑) y luego <b>«Agregar a inicio»</b>.' : 'En Chrome toca <b>⋮</b> y luego <b>«Instalar app»</b> o «Agregar a la pantalla principal».'}</div>
       <button class="btn" id="acInstall" style="margin-top:10px" hidden>Instalar app</button>`}
     ${api.demo ? '' : '<label class="l" style="margin-top:14px">Cambiar contraseña</label><div class="send"><input id="acPass" type="password" autocomplete="new-password" placeholder="Nueva contraseña (mínimo 6)"><button id="acPassOk">Cambiar</button></div>'}
@@ -3339,61 +3466,61 @@ const chartBox = (txt) => `<pre class="lr-chart">${txt}</pre>`;
 const symTable = (rows) => `<div class="lr-syms">${rows.map(([s, t]) => `<div class="lr-sym"><b>${s}</b><span>${t}</span></div>`).join('')}</div>`;
 const LESSONS = [
   {
-    t: '¿Qué es un chart?', ic: '📄',
+    t: '¿Qué es un chart?', ic: 'file',
     b: `<p>Un <b>chart</b> es la hoja que usa la banda para tocar un canto. No lleva notas en pentagrama: lleva los <b>acordes</b>, el <b>orden de las partes</b> y señales para que todos toquen igual.</p>
       <p>Se lee de <b>arriba hacia abajo</b> y de <b>izquierda a derecha</b>, como un libro. Cada parte del canto tiene su nombre y debajo sus acordes.</p>
       ${chartBox('<i>CORO</i>\n| G    | D    | Em   | C    |')}
       <p class="small muted">Aquí el coro tiene 4 compases: G, luego D, luego Em y luego C.</p>`,
   },
   {
-    t: 'El encabezado', ic: '🧾',
+    t: 'El encabezado', ic: 'heading',
     b: `<p>Arriba del chart está la información general. Léela <b>antes</b> de empezar:</p>
       ${symTable([['Título / Autor', 'El nombre del canto y quién lo compuso.'], ['Key: G (Tono)', 'La tonalidad: el acorde “casa” del canto. En la app es el tono que ves en cada canto.'], ['♩ = 72 (BPM)', 'El tempo: cuántos golpes por minuto. 72 es lento, 120 es rápido.'], ['4/4 · 6/8 · 3/4', 'El compás: cuántos golpes tiene cada compás. 4/4 = cuatro golpes (el más común).'], ['Capo 2', 'Para guitarra: pon el capotraste en el traste 2.']])}
       ${chartBox('Cantaré al Señor — Autor\nKey: G     ♩ = 72     4/4')}`,
   },
   {
-    t: 'Las partes del canto', ic: '🧩',
+    t: 'Las partes del canto', ic: 'puzzle',
     b: `<p>Cada canto se divide en partes. El chart las nombra (a veces con abreviaturas):</p>
       ${symTable([['Intro (I)', 'Entrada instrumental antes de cantar.'], ['Verso (V1, V2)', 'Cuenta la historia; cambia la letra cada vez.'], ['Pre-coro (PC)', 'Prepara y sube la energía antes del coro.'], ['Coro (C)', 'La parte principal; se repite igual.'], ['Puente (P / B)', 'Parte diferente, normalmente una vez, cerca del final.'], ['Instrumental (Inst)', 'Solo música, sin voz.'], ['Tag', 'Una frase que se repite al final.'], ['Final (F / Outro)', 'Cómo termina el canto.']])}
       <p><b>El orden</b> (roadmap) dice cómo se recorren las partes:</p>
       ${chartBox('I · V1 · PC · C · V2 · PC · C · P · C · C · F')}`,
   },
   {
-    t: 'Los acordes: notas', ic: '🎹',
+    t: 'Los acordes: notas', ic: 'piano',
     b: `<p>Cada acorde empieza con una <b>letra</b> que es su nota. Es el cifrado americano:</p>
       ${symTable([['C', 'Do'], ['D', 'Re'], ['E', 'Mi'], ['F', 'Fa'], ['G', 'Sol'], ['A', 'La'], ['B', 'Si']])}
       <p><b>#</b> (sostenido) sube medio tono: <b>F#</b> = Fa sostenido. <b>b</b> (bemol) baja medio tono: <b>Bb</b> = Si bemol.</p>`,
   },
   {
-    t: 'Tipos de acorde', ic: '🎸',
+    t: 'Tipos de acorde', ic: 'guitar',
     b: `<p>Lo que va <b>después</b> de la letra dice qué tipo de acorde es:</p>
       ${symTable([['G', 'Mayor (sonido alegre). Solo la letra.'], ['Em', '“m” = menor (sonido más triste).'], ['D7', 'Séptima: le da tensión, pide ir al siguiente acorde.'], ['Cmaj7 · CΔ', 'Séptima mayor: suave y abierto.'], ['Dsus4 · Dsus2', 'Suspendido: sin la tercera; suena “en el aire”.'], ['Cadd9 · Cadd2', 'Se le agrega una nota (la 9.ª / 2.ª) para darle color.'], ['B° · Bdim', 'Disminuido: muy tenso, de paso.'], ['C+ · Caug', 'Aumentado: tenso, poco común.'], ['G5', 'Solo raíz y quinta (power chord), sin mayor ni menor.'], ['G/B', 'Acorde con bajo: toca G pero el bajo toca B.']])}`,
   },
   {
-    t: 'Compases y ritmo', ic: '🥁',
+    t: 'Compases y ritmo', ic: 'drum',
     b: `<p>Las <b>barras</b> separan los compases. En 4/4 cada compás tiene 4 golpes:</p>
       ${symTable([['|', 'Barra: separa un compás del otro.'], ['| G |', 'Un acorde todo el compás (4 golpes).'], ['| G  D |', 'Dos acordes: 2 golpes cada uno.'], ['/ / / /', 'Cada “/” es un golpe. G / / D = 3 golpes G y 1 de D.'], ['%', 'Repite el compás anterior.'], ['N.C.', 'Sin acorde: nadie toca (solo voz o silencio).'], ['◆ · Hit', 'Golpe: todos tocan juntos ese acorde y paran.'], ['> (acento)', 'Ese golpe va más fuerte.'], ['^ · Push', 'Anticipación: el acorde entra un poco antes del golpe.']])}
       ${chartBox('| G  / / / | D  / C  / | Em / / / | %        |')}`,
   },
   {
-    t: 'Repeticiones y saltos', ic: '🔁',
+    t: 'Repeticiones y saltos', ic: 'repeat',
     b: `${symTable([['||:  :||', 'Repetir: toca lo que está entre los dos signos otra vez.'], ['x2 · x4', 'Cuántas veces se toca esa línea o parte.'], ['1.  2.', 'Casillas: la 1.ª vez toca la casilla 1; la 2.ª vez salta a la casilla 2.'], ['D.C.', 'Da Capo: vuelve al inicio.'], ['D.S. 𝄋', 'Dal Segno: vuelve al signo 𝄋.'], ['𝄌 Coda', 'Salta a la parte final marcada con 𝄌.'], ['Fine', 'Aquí termina el canto.']])}
       ${chartBox('<i>CORO</i>  x2\n||: G  | D  | Em | C  :||')}`,
   },
   {
-    t: 'Dinámica y señales', ic: '🎚',
+    t: 'Dinámica y señales', ic: 'sliders',
     b: `<p>Dicen <b>cómo</b> tocar: más suave, más fuerte, quién toca.</p>
       ${symTable([['p · mf · f', 'Suave · medio · fuerte.'], ['< (crescendo)', 'Ir subiendo poco a poco.'], ['> (decrescendo)', 'Ir bajando poco a poco.'], ['Build', 'Construir: crecer en energía.'], ['Down · Suave', 'Bajar: tocar sencillo y suave.'], ['Solo voz · A capella', 'Solo cantan, sin instrumentos.'], ['Todos · Full band', 'Entra toda la banda.'], ['Pad', 'Solo un fondo suave (teclado).'], ['Fade', 'Ir desapareciendo hasta terminar.']])}`,
   },
   {
-    t: 'Los números (Nashville)', ic: '🔢',
+    t: 'Los números (Nashville)', ic: 'hash',
     b: `<p>Algunos charts usan <b>números</b> en vez de letras. Cada número es un acorde según el tono. Así el mismo chart sirve en cualquier tono.</p>
       ${symTable([['1', 'G (en tono de G)'], ['2m', 'Am'], ['3m', 'Bm'], ['4', 'C'], ['5', 'D'], ['6m', 'Em'], ['7°', 'F#°']])}
       ${chartBox('Key: G\n| 1  | 5  | 6m | 4  |   =   | G | D | Em | C |')}
       <p class="small muted">Si el tono cambia a A, el mismo 1 5 6m 4 sería A E F#m D.</p>`,
   },
   {
-    t: 'Practica: lee este chart', ic: '✅', practice: true,
+    t: 'Practica: lee este chart', ic: 'target', practice: true,
     b: `<p>Toca cada símbolo para ver qué significa. Léelo como lo haría la banda:</p>
       <pre class="lr-chart lr-try">${[
         ['Cantaré al Señor', 'El título del canto.'], '\n', ['Key: G', 'Tono: G (Sol). El acorde casa.'], '   ', ['♩=72', 'Tempo lento: 72 golpes por minuto.'], '   ', ['4/4', 'Cuatro golpes por compás.'], '\n\n',
@@ -3402,37 +3529,61 @@ const LESSONS = [
         ['CORO', 'La parte principal.'], ' ', ['Build', 'Crecer en energía: entra toda la banda.'], '\n', ['||:', 'Inicio de repetición.'], ' ', ['C', 'Do.'], ' ', ['|', 'Barra.'], ' ', ['G', 'Sol.'], ' ', ['|', 'Barra.'], ' ', ['D', 'Re.'], ' ', ['|', 'Barra.'], ' ', ['Em', 'Mi menor.'], ' ', [':||', 'Fin de repetición: vuelve al ||: una vez.'], '\n\n',
         ['FINAL', 'Cómo termina.'], ' ', ['◆', 'Golpe: todos juntos y paran.'], ' ', ['G', 'Termina en Sol, el tono casa.'],
       ].map((x) => (typeof x === 'string' ? x : `<button type="button" class="tk" data-tip="${esc(x[1])}">${esc(x[0])}</button>`)).join('')}</pre>
-      <div class="lr-tip" id="lrTip">👆 Toca un símbolo del chart</div>
+      <div class="lr-tip" id="lrTip">${ic('pointer')} Toca un símbolo del chart</div>
       <p><b>Paso a paso:</b> 1) Mira el tono y el tempo. 2) Sigue el orden de las partes. 3) Cuenta los golpes de cada compás. 4) Fíjate en repeticiones y señales. 5) Escucha a quien dirige.</p>`,
   },
 ];
+// Las lecciones van como un mapa: un camino de puntos unidos por una línea. Lo completado se
+// llena (punto con palomita y la línea hasta el siguiente), la lección que sigue late suave y el
+// camino termina en la «Meta». Arriba, un anillo con el avance.
 function viewLearn() {
   let seen = [];
   try { seen = JSON.parse(localStorage.getItem(LEARN_KEY) || '[]') || []; } catch { /* sin almacenamiento */ }
-  const done = () => seen.filter((i) => i < LESSONS.length).length;
+  const N = LESSONS.length;
+  const isDone = (i) => seen.includes(i);
+  const current = () => LESSONS.findIndex((_, k) => !isDone(k));
   $('view').innerHTML = `${hero({ title: 'AprendeMe', back: '#/' })}<div class="sheetbody">
-    <div class="lr-intro"><b>Aprende a leer un chart</b><span>Paso a paso: toca cada lección. Iremos agregando más.</span>
-      <div class="lr-prog"><i id="lrBar"></i></div><small id="lrCount"></small></div>
-    <div class="lr-list">${LESSONS.map((l, i) => `<div class="lr-item${seen.includes(i) ? ' seen' : ''}" style="--i:${i}" data-li="${i}">
-        <button class="lr-head" type="button" data-lhead="${i}"><span class="lr-n">${seen.includes(i) ? '✓' : i + 1}</span><span class="lr-ic">${l.ic}</span><b>${esc(l.t)}</b><span class="sv-chev">›</span></button>
-        <div class="lr-body" hidden>${l.b}<button class="btn ghost lr-next" type="button" data-lnext="${i}">${i < LESSONS.length - 1 ? 'Entendido · siguiente →' : '✓ Terminé'}</button></div></div>`).join('')}</div>
+    <div class="lm-top">
+      <div class="lm-ring"><svg viewBox="0 0 44 44" aria-hidden="true"><circle class="bg" cx="22" cy="22" r="19"/><circle class="fg" id="lmRing" cx="22" cy="22" r="19"/></svg><b id="lmNum"></b></div>
+      <div class="lm-head"><b>Aprende a leer un chart</b><span id="lmTxt"></span></div>
+    </div>
+    <ol class="lm-path">${LESSONS.map((l, i) => `<li class="lm-step" data-li="${i}" style="--i:${i}">
+        <button class="lm-node" type="button" data-lhead="${i}">
+          <span class="lm-dot"><span class="lm-ic">${ic(l.ic)}</span><span class="lm-ok">${ic('check')}</span></span>
+          <span class="lm-txt"><small>Lección ${i + 1}</small><b>${esc(l.t)}</b></span>
+          <span class="lm-chev">${ic('chevRight')}</span>
+        </button>
+        <div class="lm-body" hidden>${l.b}<button class="lm-next" type="button" data-lnext="${i}">${i < N - 1 ? `Entendido ${ic('arrowRight')}` : `${ic('flag')} Terminé`}</button></div>
+      </li>`).join('')}
+      <li class="lm-end" style="--i:${N}"><span class="lm-dot">${ic('flag')}</span><span class="lm-txt"><small>Meta</small><b>Leer un chart completo</b></span></li>
+    </ol>
   </div>`;
-  const progress = () => {
-    const n = done();
-    $('lrBar').style.width = (n / LESSONS.length) * 100 + '%';
-    $('lrCount').textContent = `${n} de ${LESSONS.length} lecciones vistas`;
+  const RING = 2 * Math.PI * 19;
+  const paint = () => {
+    const n = seen.filter((i) => i < N).length;
+    const cur = current();
+    $('view').querySelectorAll('.lm-step').forEach((li, i) => {
+      li.classList.toggle('done', isDone(i));
+      li.classList.toggle('current', i === cur);
+    });
+    $('view').querySelector('.lm-end').classList.toggle('done', n === N);
+    $('lmRing').style.strokeDasharray = RING;
+    $('lmRing').style.strokeDashoffset = RING * (1 - n / N);
+    $('lmNum').textContent = `${n}/${N}`;
+    $('lmTxt').textContent = n === N ? '¡Completaste el mapa! Puedes repasar cuando quieras.'
+      : n ? `Vas en la lección ${cur + 1}. Sigue el camino.` : 'Sigue el camino, una lección a la vez.';
   };
-  progress();
+  paint();
   const toggle = (i, open) => {
     const item = $('view').querySelector(`[data-li="${i}"]`);
     if (!item) return;
-    const body = item.querySelector('.lr-body');
+    const body = item.querySelector('.lm-body');
     const willOpen = open != null ? open : body.hidden;
     if (willOpen) {
-      $('view').querySelectorAll('.lr-item.open').forEach((x) => { if (x !== item) { x.classList.remove('open'); x.querySelector('.lr-body').hidden = true; } });
+      $('view').querySelectorAll('.lm-step.open').forEach((x) => { if (x !== item) { x.classList.remove('open'); x.querySelector('.lm-body').hidden = true; } });
       body.hidden = false; item.classList.add('open');
-      if (body.animate && !reducedMotion()) body.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: 'cubic-bezier(.25,.8,.25,1)' });
-      setTimeout(() => item.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }), 60);
+      if (body.animate && !reducedMotion()) body.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }], { duration: 360, easing: 'cubic-bezier(.22,.61,.36,1)' });
+      setTimeout(() => item.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' }), 80);
     } else { body.hidden = true; item.classList.remove('open'); }
   };
   $('view').onclick = (e) => {
@@ -3443,11 +3594,12 @@ function viewLearn() {
       const i = Number(nx.dataset.lnext);
       if (!seen.includes(i)) { seen.push(i); try { localStorage.setItem(LEARN_KEY, JSON.stringify(seen)); } catch { /* sin almacenamiento */ } }
       const item = $('view').querySelector(`[data-li="${i}"]`);
-      item.classList.add('seen');
-      item.querySelector('.lr-n').textContent = '✓';
-      progress();
+      // El punto se llena con una palomita y la línea avanza hasta la siguiente lección.
+      item.classList.remove('just'); void item.offsetWidth; item.classList.add('just');
+      paint();
       haptic(8);
-      if (i < LESSONS.length - 1) toggle(i + 1, true); else { toggle(i, false); celebrate('¡Ya sabes leer un chart!'); }
+      if (i < N - 1) setTimeout(() => toggle(i + 1, true), 420);
+      else { toggle(i, false); celebrate('¡Ya sabes leer un chart!'); }
       return;
     }
     const tk = e.target.closest('.tk');
