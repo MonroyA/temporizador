@@ -1182,7 +1182,16 @@ function hideSplash() {
   const left = Math.max(0, 600 - (Date.now() - splashT0));
   setTimeout(() => { sp.classList.add('out'); setTimeout(() => sp.remove(), 700); }, left);
 }
-setTimeout(hideSplash, 7000); // por si la red tarda: no se queda la bienvenida para siempre
+// Si la red tarda, la bienvenida (con su animación) se queda hasta que haya algo que mostrar:
+// antes se quitaba a los 7 s y quedaba la pantalla vacía en negro o blanco. A los 7 s avisa que
+// está tardando; el rescate (index.html) ofrece reparar a los 10 s si nada abrió.
+setTimeout(function waitView() {
+  const sp = $('splash');
+  if (!sp || sp.classList.contains('out')) return;
+  if ($('view') && $('view').children.length) { hideSplash(); return; }
+  sp.classList.add('slow');
+  setTimeout(waitView, 1000);
+}, 7000);
 
 // ======================================================================================
 // Entrar
@@ -2679,6 +2688,7 @@ function viewSongs() {
   let carp = '';
   try { carp = sessionStorage.getItem('cantos-carpeta') || ''; } catch { /* sin almacenamiento */ }
   const isCatName = (n) => { const t = String(n || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim(); return t === 'alabanza' || t === 'adoracion'; };
+  // Las carpetas de Letras con cantos, sin Alabanza ni Adoración (esas ya son las pestañas).
   const carpetas = () => [...new Set(songs.map((s) => String(s.carpeta || '').trim()).filter((n) => n && !isCatName(n)))].sort((a, b) => a.localeCompare(b, 'es'));
   // El botón de filtro (a la derecha del buscador) abre la lista de carpetas.
   let carpSig = '';
@@ -2690,7 +2700,7 @@ function viewSongs() {
     carpSig = sig;
     // Sin filtro: el ícono de filtro. Con una carpeta elegida: «✕ Quitar» (al tocarlo, se quita).
     const fb = $('sgFilt');
-    fb.hidden = !list.length && !carp;
+    fb.hidden = !list.length && !carp; // solo aparece si hay carpetas con cantos
     fb.classList.toggle('on', !!carp);
     fb.innerHTML = carp
       ? '<span class="fx">✕</span><span class="fl">Quitar</span>'
