@@ -154,14 +154,30 @@
   .hscroll::-webkit-scrollbar { display: none; }
 
   /* Barra de abajo: las 4 opciones siempre a la mano */
-  .tabbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 25; height: var(--nav-h); padding: 8px 10px var(--safe-b); display: flex; justify-content: center;
-    background: var(--glass2); -webkit-backdrop-filter: blur(24px) saturate(160%); backdrop-filter: blur(24px) saturate(160%); border-top: 1px solid var(--glass-line); box-shadow: 0 -10px 30px rgba(10, 20, 50, .12); }
-  .tabbar .in { display: grid; grid-template-columns: repeat(4, 1fr); width: 100%; max-width: 520px; }
-  .tabbar button { border: 0; background: none; display: flex; flex-direction: column; align-items: center; gap: 4px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
-  .tabbar i { width: 44px; height: 44px; border-radius: 14px; display: grid; place-items: center; font-style: normal; font-size: 19px; color: #fff; box-shadow: var(--shadow); transition: transform .15s; }
+  /* Íconos de línea (ic('…') en app.js): toman el tamaño y el color del texto donde van */
+  svg.i { display: inline-block; width: 1.15em; height: 1.15em; vertical-align: -.2em; flex: none; }
+  .btn svg.i, .link svg.i, .new-pill svg.i, .get svg.i, .mode svg.i { margin-right: 2px; }
+  .chg-i { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-right: 8px; border-radius: 7px; background: var(--sky); color: var(--sky-text); vertical-align: middle; }
+  .chg-i svg.i { width: 14px; height: 14px; vertical-align: 0; }
+  #toast svg.i { margin-right: 4px; }
+  /* Barra de abajo: píldora flotante de vidrio con íconos de línea (minimalista). La opción
+     abierta lleva una píldora clara detrás (.tb-ind) que se desliza de una a otra. */
+  .tabbar { position: fixed; left: 0; right: 0; bottom: calc(var(--safe-b) + 10px); z-index: 25; display: flex; justify-content: center; padding: 0 14px; pointer-events: none; }
+  .tabbar .in { position: relative; pointer-events: auto; display: grid; grid-template-columns: repeat(4, 1fr); width: 100%; max-width: 440px; height: 62px; padding: 6px; border-radius: 999px;
+    background: rgba(255,255,255,.72); -webkit-backdrop-filter: blur(22px) saturate(170%); backdrop-filter: blur(22px) saturate(170%);
+    border: 1px solid rgba(255,255,255,.9); box-shadow: 0 12px 34px rgba(16,42,107,.18), inset 0 1px 0 rgba(255,255,255,.6); }
+  [data-theme="dark"] .tabbar .in { background: rgba(22,26,36,.72); border-color: rgba(255,255,255,.1); box-shadow: 0 12px 34px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.06); }
+  .tabbar button { position: relative; z-index: 1; border: 0; background: none; display: grid; place-items: center; border-radius: 999px; color: var(--muted); transition: color .3s; }
+  .tabbar button svg { width: 25px; height: 25px; transition: transform .35s var(--spring); }
   .tabbar button.on { color: var(--title); }
-  .tabbar button.on i { transform: translateY(-3px); box-shadow: 0 10px 22px rgba(31,111,209,.35); }
-  .q1 { background: linear-gradient(145deg, #4fe0f0, #24b9d6); } .q2 { background: linear-gradient(145deg, #3a8cf0, #1f6fd1); } .q3 { background: linear-gradient(145deg, #2b4fae, #1b3c8f); } .q4 { background: linear-gradient(145deg, #1f2f63, #12204a); }
+  .tabbar button { color: #3d4b6e; }
+  [data-theme="dark"] .tabbar button { color: rgba(255,255,255,.72); }
+  [data-theme="dark"] .tabbar button.on { color: #fff; }
+  .tabbar button:active svg { transform: scale(.88); }
+  .tb-ind { position: absolute; z-index: 0; top: 6px; bottom: 6px; left: 6px; width: calc((100% - 12px) / 4); border-radius: 999px;
+    background: rgba(11,42,107,.09); transform: translateX(calc(var(--ti, 1) * 100%)); transition: transform .45s cubic-bezier(.22,.61,.36,1), opacity .3s; }
+  [data-theme="dark"] .tb-ind { background: rgba(255,255,255,.14); }
+  .tabbar .in:not(.has-on) .tb-ind { opacity: 0; }
 
   /* Tarjetas de fechas (pantalla 1) */
   .date-card { flex: 0 0 164px; scroll-snap-align: start; border: 1px solid var(--glass-line); text-align: left; background: var(--glass); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); border-radius: 22px; padding: 8px; box-shadow: var(--shadow); position: relative; }
@@ -324,64 +340,96 @@
   .member { display: flex; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--line); }
   .member .av { width: 42px; height: 42px; border-radius: 50%; background: var(--sky); color: var(--sky-text); display: grid; place-items: center; font-weight: 800; flex: none; }
   .member select { width: auto; padding: 8px 10px; font-size: 13px; }
-  /* ===== Entrar (login): sigue a la bienvenida — mismo fondo verde azulado y el logo ===== */
-  .lg { position: relative; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; justify-content: flex-end; overflow: hidden; color: #fff;
-    background: #091f1d radial-gradient(120% 70% at 50% 18%, #17504a 0%, #0d2e2b 45%, #071615 100%); }
+  /* ===== Entrar (login): sigue a la bienvenida — mismo fondo verde azulado y el logo =====
+     El logo aparece al centro, sube despacio y se queda arriba a medias, grande y difuminado, de
+     fondo. La tarjeta queda al centro; con el teclado abierto sube (--kb) para no taparse. */
+  .lg { position: relative; min-height: 100vh; min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: calc(var(--safe-t) + 20px) 14px calc(var(--safe-b) + 20px + var(--kb, 0px)); overflow: hidden; color: #fff;
+    background: #091f1d radial-gradient(120% 70% at 50% 18%, #17504a 0%, #0d2e2b 45%, #071615 100%); transition: padding-bottom .35s cubic-bezier(.22,.61,.36,1); }
   .lg-sky { position: absolute; inset: 0; pointer-events: none; }
-  .lg-sky i { position: absolute; border-radius: 50%; filter: blur(46px); opacity: .55; animation: lgDrift 14s ease-in-out infinite; }
-  .lg-sky i:nth-child(1) { width: 62vw; height: 62vw; left: -18vw; top: 6vh; background: #1f8f84; }
-  .lg-sky i:nth-child(2) { width: 54vw; height: 54vw; right: -16vw; top: 22vh; background: #2a6fd1; opacity: .35; animation-duration: 18s; animation-delay: -6s; }
-  .lg-sky i:nth-child(3) { width: 40vw; height: 40vw; left: 30vw; top: -8vh; background: #8be3d6; opacity: .22; animation-duration: 22s; animation-delay: -11s; }
-  @keyframes lgDrift { 0%, 100% { transform: translate(0, 0) scale(1); } 33% { transform: translate(6vw, 4vh) scale(1.08); } 66% { transform: translate(-4vw, 2vh) scale(.95); } }
-  .lg-top { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: calc(var(--safe-t) + 28px) 24px 18px; }
-  .lg-mark { position: relative; width: 150px; height: 120px; }
+  .lg-sky i { position: absolute; border-radius: 50%; filter: blur(46px); opacity: .5; animation: lgDrift 18s ease-in-out infinite; }
+  .lg-sky i:nth-child(1) { width: 62vw; height: 62vw; left: -18vw; top: 10vh; background: #1f8f84; }
+  .lg-sky i:nth-child(2) { width: 54vw; height: 54vw; right: -16vw; top: 40vh; background: #2a6fd1; opacity: .3; animation-duration: 22s; animation-delay: -6s; }
+  .lg-sky i:nth-child(3) { width: 40vw; height: 40vw; left: 30vw; bottom: -8vh; background: #8be3d6; opacity: .18; animation-duration: 26s; animation-delay: -11s; }
+  @keyframes lgDrift { 0%, 100% { transform: translate(0, 0) scale(1); } 33% { transform: translate(5vw, 3vh) scale(1.06); } 66% { transform: translate(-4vw, 2vh) scale(.96); } }
+  /* El logo: aparece al centro y sube despacio hasta quedar arriba, a medias, difuminado. */
+  .lg-mark { position: absolute; left: 50%; top: 0; width: 190px; aspect-ratio: 190 / 152; pointer-events: none;
+    animation: lgLogoUp 2.4s cubic-bezier(.45,0,.2,1) both; }
   .lg-mark img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-  .lg-mark .s { transform-origin: 53% 73%; animation: spSun 1s cubic-bezier(.2,.8,.2,1) both, spGlow 3.2s ease-in-out 1s infinite; }
-  .lg-mark .a { transform-origin: 60% 62%; animation: spFly 1.2s cubic-bezier(.16,1,.3,1) .2s both, spGlide 4.5s ease-in-out 1.4s infinite; }
-  .lg-brand { font: 800 22px/1 var(--font); letter-spacing: .26em; padding-left: .26em; animation: fadeUp .7s var(--ease) .35s both; }
+  .lg-mark .s { transform-origin: 53% 73%; animation: spSun 1.2s cubic-bezier(.2,.8,.2,1) both, spGlow 4s ease-in-out 2.4s infinite; }
+  .lg-mark .a { transform-origin: 60% 62%; animation: spFly 1.5s cubic-bezier(.16,1,.3,1) .2s both, spGlide 6s ease-in-out 2.4s infinite; }
+  @keyframes lgLogoUp {
+    /* Mismo tamaño que en la bienvenida; al subir queda del tamaño del logo original (150 px). */
+    0% { transform: translate(-50%, calc(50vh - 50%)) scale(1); opacity: 0; filter: blur(0); }
+    22% { transform: translate(-50%, calc(50vh - 50%)) scale(1); opacity: 1; filter: blur(0); }
+    45% { transform: translate(-50%, calc(50vh - 50%)) scale(1); opacity: 1; filter: blur(0); }
+    100% { transform: translate(-50%, calc(var(--safe-t) + 2vh)) scale(.79); opacity: .8; filter: blur(2.5px) drop-shadow(0 0 18px rgba(111,227,214,.35)); }
+  }
+  .lg-card { position: relative; width: 100%; max-width: 420px; padding: 22px 20px 18px; border-radius: 30px; display: flex; flex-direction: column; gap: 12px;
+    background: rgba(10, 32, 30, .55); -webkit-backdrop-filter: blur(24px) saturate(150%); backdrop-filter: blur(24px) saturate(150%);
+    border: 1px solid rgba(255,255,255,.12); box-shadow: 0 24px 60px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.08);
+    animation: lgUp 1s cubic-bezier(.22,.61,.36,1) 1.15s both; }
+  @keyframes lgUp { from { opacity: 0; transform: translateY(36px); } }
+  .lg-card > * { animation: lgFade .8s cubic-bezier(.22,.61,.36,1) both; }
+  @keyframes lgFade { from { opacity: 0; transform: translateY(10px); } }
+  .lg-card > :nth-child(1) { animation-delay: 1.3s; } .lg-card > :nth-child(2) { animation-delay: 1.38s; } .lg-card > :nth-child(3) { animation-delay: 1.46s; }
+  .lg-card > :nth-child(4) { animation-delay: 1.54s; } .lg-card > :nth-child(5) { animation-delay: 1.62s; } .lg-card > :nth-child(7) { animation-delay: 1.7s; }
+  .lg-card > :nth-child(8) { animation-delay: 1.78s; } .lg-card > :nth-child(10) { animation-delay: 1.86s; }
+  .lg-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 2px; }
+  .lg-brand { font: 800 15px/1 var(--font); letter-spacing: .24em; color: #fff; }
   .lg-brand span { color: #6fe3d6; }
-  .lg-tag { font: 500 13px var(--font); letter-spacing: .06em; color: rgba(255,255,255,.7); animation: fadeUp .7s var(--ease) .45s both; }
-  .lg-card { position: relative; margin: 0 14px calc(var(--safe-b) + 14px); padding: 24px 20px 18px; border-radius: 30px; display: flex; flex-direction: column; gap: 12px;
-    background: rgba(10, 32, 30, .5); -webkit-backdrop-filter: blur(24px) saturate(150%); backdrop-filter: blur(24px) saturate(150%);
-    border: 1px solid rgba(255,255,255,.12); box-shadow: 0 24px 60px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.08); animation: lgUp .8s var(--spring) .25s both; }
-  @keyframes lgUp { from { opacity: 0; transform: translateY(60px) scale(.96); } }
-  .lg-card > * { animation: fadeUp .6s var(--ease) both; }
-  .lg-card > :nth-child(1) { animation-delay: .4s; } .lg-card > :nth-child(2) { animation-delay: .46s; } .lg-card > :nth-child(3) { animation-delay: .52s; }
-  .lg-card > :nth-child(4) { animation-delay: .58s; } .lg-card > :nth-child(6) { animation-delay: .64s; } .lg-card > :nth-child(7) { animation-delay: .7s; } .lg-card > :nth-child(9) { animation-delay: .76s; }
-  .lg-card h2 { margin: 0; font: 800 24px/1.15 var(--font); color: #fff; }
+  .lg-tag { font: 500 12px var(--font); letter-spacing: .04em; color: rgba(255,255,255,.55); }
+  .lg-card h2 { margin: 0; font: 800 25px/1.15 var(--font); color: #fff; }
   .lg-sub { margin: -6px 0 4px; font-size: 13.5px; color: rgba(255,255,255,.68); }
   .lg-field { position: relative; display: block; }
-  .lg-field input { height: 58px; padding: 22px 48px 6px 48px; border-radius: 18px; background: rgba(255,255,255,.07); border: 1.5px solid rgba(255,255,255,.1); color: #fff; font-size: 16px; transition: border-color .25s, background .25s, box-shadow .25s; }
+  .lg-field input { height: 58px; padding: 22px 48px 6px 48px; border-radius: 18px; background: rgba(255,255,255,.07); border: 1.5px solid rgba(255,255,255,.1); color: #fff; font-size: 16px; transition: border-color .3s, background .3s, box-shadow .3s; scroll-margin: 120px 0; }
   .lg-field input:focus { border-color: #4fd1c5; background: rgba(255,255,255,.1); box-shadow: 0 0 0 4px rgba(79,209,197,.15); }
-  .lg-ic { position: absolute; left: 16px; top: 50%; width: 20px; height: 20px; margin-top: -10px; color: rgba(255,255,255,.5); transition: color .25s; pointer-events: none; }
+  .lg-ic { position: absolute; left: 16px; top: 50%; width: 20px; height: 20px; margin-top: -10px; color: rgba(255,255,255,.5); transition: color .3s; pointer-events: none; }
   .lg-ic svg, .lg-eye svg, .lg-go i svg, .lg-note svg { width: 100%; height: 100%; display: block; }
   .lg-field:focus-within .lg-ic { color: #6fe3d6; }
-  .lg-label { position: absolute; left: 48px; top: 50%; transform: translateY(-50%); font-size: 15px; color: rgba(255,255,255,.55); pointer-events: none; transform-origin: 0 50%; transition: transform .22s var(--ease), color .22s, top .22s var(--ease); }
+  .lg-label { position: absolute; left: 48px; top: 50%; transform: translateY(-50%); font-size: 15px; color: rgba(255,255,255,.55); pointer-events: none; transform-origin: 0 50%; transition: transform .3s cubic-bezier(.22,.61,.36,1), color .3s, top .3s cubic-bezier(.22,.61,.36,1); }
   .lg-field input:focus + .lg-label, .lg-field input:not(:placeholder-shown) + .lg-label { top: 17px; transform: translateY(-50%) scale(.76); color: #8be3d6; }
   .lg-eye { position: absolute; right: 8px; top: 50%; width: 40px; height: 40px; margin-top: -20px; padding: 10px; border: 0; border-radius: 12px; background: none; color: rgba(255,255,255,.6); }
   .lg-eye:active { background: rgba(255,255,255,.08); }
-  .lg-err { min-height: 0; font-size: 13px; font-weight: 600; color: #ffb4a8; margin: -2px 2px 0; transition: min-height .2s; }
+  .lg-err { min-height: 0; font-size: 13px; font-weight: 600; color: #ffb4a8; margin: -2px 2px 0; }
   .lg-card.has-err .lg-field input { border-color: rgba(255,120,110,.55); }
   .lg-go { position: relative; height: 56px; border: 0; border-radius: 18px; display: flex; align-items: center; justify-content: center; gap: 10px; font: 700 16.5px var(--font); color: #062421;
-    background: linear-gradient(135deg, #8be3d6, #41aca4 55%, #2a8fe0); box-shadow: 0 14px 30px rgba(65,172,164,.4); transition: transform .15s, box-shadow .25s, background .3s; overflow: hidden; }
-  .lg-go:active { transform: scale(.97); }
-  .lg-go i { width: 20px; height: 20px; transition: transform .3s var(--ease); }
+    background: linear-gradient(135deg, #8be3d6, #41aca4 55%, #2a8fe0); box-shadow: 0 14px 30px rgba(65,172,164,.35); transition: transform .2s ease, box-shadow .3s, background .4s; overflow: hidden; }
+  .lg-go:active { transform: scale(.98); }
+  .lg-go i { width: 20px; height: 20px; transition: transform .35s cubic-bezier(.22,.61,.36,1); }
   .lg-go:hover i { transform: translateX(3px); }
   .lg-go.loading i, .lg-go.loading span { visibility: hidden; }
   .lg-go.loading::after { border-color: rgba(6,36,33,.25); border-top-color: #062421; }
-  .lg-go.ok { background: linear-gradient(135deg, #7ee2a8, #17b26a); animation: lgOk .5s var(--spring); }
-  @keyframes lgOk { 40% { transform: scale(1.04); } }
+  .lg-go.ok { background: linear-gradient(135deg, #7ee2a8, #17b26a); }
   .lg-forgot { align-self: center; border: 0; background: none; padding: 6px 10px; color: #8be3d6; font: 600 13.5px var(--font); }
   .lg-first { padding: 12px 14px; border-radius: 16px; background: rgba(255,255,255,.06); font-size: 13px; color: rgba(255,255,255,.75); }
   .lg-first b { color: #fff; }
   .lg-alt { display: block; width: 100%; margin-top: 10px; height: 46px; border-radius: 14px; border: 1.5px solid rgba(139,227,214,.5); background: none; color: #8be3d6; font: 700 14px var(--font); }
-  .lg-note { display: flex; align-items: flex-start; gap: 8px; margin: 4px 2px 0; font-size: 12px; line-height: 1.45; color: rgba(255,255,255,.5); }
+  .lg-note { display: flex; align-items: flex-start; gap: 8px; margin: 4px 2px 0; font-size: 12px; line-height: 1.45; color: rgba(255,255,255,.5); transition: opacity .3s; }
   .lg-note svg { flex: none; width: 15px; height: 15px; margin-top: 1px; }
   .lg-note b { color: rgba(255,255,255,.8); }
-  /* Tablet u horizontal: la tarjeta al centro, no pegada abajo */
-  @media (min-width: 640px) { .lg { justify-content: center; align-items: center; } .lg-top { flex: none; } .lg-card { width: 420px; margin: 0 auto 6vh; } }
+  /* Al entrar: el login se desvanece suave (la tarjeta sube un poco) antes de que llegue la app */
+  .lg.lg-out { transition: opacity .45s cubic-bezier(.4,0,.2,1); opacity: 0; }
+  .lg.lg-out .lg-card { transition: transform .45s cubic-bezier(.4,0,.2,1); transform: translateY(-14px) scale(.98); }
+  /* Entrada a la app en cascada: cada parte aparece de arriba abajo, suave y sin cortes */
+  .cas { animation: casIn .8s cubic-bezier(.22,.61,.36,1) both; animation-delay: calc(var(--ci, 0) * 65ms); }
+  .hero.cas { animation-name: casHero; animation-duration: .9s; }
+  .sheetbody.cas { animation-name: casSheet; animation-duration: .9s; }
+  @keyframes casIn { from { opacity: 0; transform: translateY(16px); } }
+  @keyframes casHero { from { opacity: 0; transform: translateY(-12px); } }
+  @keyframes casSheet { from { opacity: 0; transform: translateY(40px); } }
+  .tabbar.cas-bar { animation: casBar .85s cubic-bezier(.22,.61,.36,1) .35s both; }
+  @keyframes casBar { from { opacity: 0; transform: translateY(100%); } }
+  /* Esperando a que se vaya la bienvenida: lista pero invisible */
+  .cas-wait { opacity: 0 !important; }
+  html.lite .cas, html.lite .tabbar.cas-bar { animation-duration: .45s; animation-delay: calc(var(--ci, 0) * 35ms); }
+  /* Escribiendo (teclado abierto): el logo se aparta un poco más y la nota se esconde. */
+  .lg.typing .lg-mark { opacity: .25; transition: opacity .4s; }
+  .lg.typing .lg-note, .lg.typing .lg-sub { display: none; }
+  .lg.typing { justify-content: center; }
   html.lite .lg-sky i { animation: none; filter: blur(30px); }
-  html.lite .lg-card { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgba(10,32,30,.9); }
+  html.lite .lg-mark { animation-duration: 1.2s; }
+  html.lite .lg-card { -webkit-backdrop-filter: none; backdrop-filter: none; background: rgba(10,32,30,.92); }
   .login-wrap { min-height: 100vh; display: flex; flex-direction: column; }
   .login-wrap .sheetbody { flex: 1; display: flex; flex-direction: column; gap: 12px; padding-bottom: calc(var(--safe-b) + 30px); }
   .err { color: var(--red); font-size: 13px; min-height: 1em; }
@@ -530,10 +578,8 @@
   .tabs.has-ind button { position: relative; z-index: 1; transition: color .3s; }
   .tabs.has-ind button.on { background: none; box-shadow: none; }
   /* Barra de abajo: el ícono rebota */
-  .tabbar i.bounce { animation: tabBounce .5s var(--spring); }
-  @keyframes tabBounce { 30% { transform: translateY(-7px) scale(1.12); } 60% { transform: translateY(-2px) scale(.96); } }
-  .tabbar button i { transition: transform .35s var(--spring), box-shadow .3s; }
-  .tabbar button span, .tabbar button { transition: color .3s; }
+  .tabbar svg.bounce { animation: tabBounce .5s var(--spring); }
+  @keyframes tabBounce { 30% { transform: translateY(-4px) scale(1.12); } 60% { transform: translateY(-1px) scale(.96); } }
   /* Interruptor animado */
   .switch { width: 50px; height: 30px; border-radius: 99px; background: var(--chip); position: relative; flex: none; transition: background .35s; box-shadow: inset 0 1px 3px rgba(0,0,0,.15); }
   .switch i { position: absolute; top: 3px; left: 3px; width: 24px; height: 24px; border-radius: 50%; background: #fff; box-shadow: 0 2px 6px rgba(0,0,0,.25); transition: transform .4s var(--spring), width .2s; }
@@ -825,6 +871,57 @@
   .chg-acts { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
   .chg-acts .btn { margin: 0; }
   /* AprendeMe */
+  /* ===== AprendeMe: mapa de lecciones (minimalista) ===== */
+  .lm-top { display: flex; align-items: center; gap: 14px; padding: 14px 16px; margin-bottom: 18px; border-radius: 22px; background: var(--glass); border: 1px solid var(--glass-line); box-shadow: var(--shadow); animation: fadeUp .6s var(--ease) both; }
+  .lm-ring { position: relative; width: 58px; height: 58px; flex: none; }
+  .lm-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+  .lm-ring circle { fill: none; stroke-width: 4; }
+  .lm-ring .bg { stroke: var(--chip); }
+  .lm-ring .fg { stroke: #41aca4; stroke-linecap: round; transition: stroke-dashoffset 1s cubic-bezier(.22,.61,.36,1); }
+  .lm-ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 13px; font-weight: 800; color: var(--title); }
+  .lm-head { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .lm-head b { color: var(--title); font-size: 16.5px; }
+  .lm-head span { color: var(--muted); font-size: 13px; }
+  .lm-path { list-style: none; margin: 0; padding: 0 0 8px; }
+  .lm-step, .lm-end { position: relative; padding-bottom: 14px; animation: fadeUp .55s var(--ease) both; animation-delay: calc(var(--i, 0) * 55ms); }
+  /* La línea del camino: gris de fondo y, encima, el tramo completado que se llena hacia abajo */
+  .lm-step::before, .lm-step::after { content: ""; position: absolute; left: 23px; top: 50px; bottom: -2px; width: 2px; border-radius: 2px; }
+  .lm-step::before { background: var(--chip); }
+  .lm-step::after { background: linear-gradient(#41aca4, #2a8fe0); transform: scaleY(0); transform-origin: top; transition: transform .7s cubic-bezier(.22,.61,.36,1) .15s; }
+  .lm-step.done::after { transform: scaleY(1); }
+  .lm-node { width: 100%; display: flex; align-items: center; gap: 14px; padding: 2px 0; border: 0; background: none; text-align: left; color: var(--title); }
+  .lm-dot { position: relative; width: 48px; height: 48px; flex: none; border-radius: 50%; display: grid; place-items: center; background: var(--glass); border: 2px solid var(--chip); color: var(--muted); transition: background .4s, border-color .4s, color .4s, transform .3s var(--spring); }
+  .lm-dot svg.i { width: 21px; height: 21px; vertical-align: 0; }
+  .lm-dot > span { grid-area: 1 / 1; display: grid; place-items: center; transition: opacity .3s, transform .4s var(--spring); }
+  .lm-ok { opacity: 0; transform: scale(.4); }
+  .lm-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+  .lm-txt small { font-size: 11.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+  .lm-txt b { font-size: 15px; font-weight: 700; }
+  .lm-chev { color: var(--muted); transition: transform .3s var(--ease); }
+  .lm-chev svg.i { width: 18px; height: 18px; }
+  .lm-step.open .lm-chev { transform: rotate(90deg); color: var(--sky-text); }
+  /* Completada: punto lleno con palomita */
+  .lm-step.done .lm-dot { background: linear-gradient(135deg, #41aca4, #2a8fe0); border-color: transparent; color: #fff; }
+  .lm-step.done .lm-ic { opacity: 0; transform: scale(.4); }
+  .lm-step.done .lm-ok { opacity: 1; transform: none; }
+  .lm-step.just .lm-dot { animation: lmPop .6s var(--spring); }
+  @keyframes lmPop { 40% { transform: scale(1.18); } }
+  /* La que sigue: borde de color y un latido suave */
+  .lm-step.current .lm-dot { border-color: #41aca4; color: #41aca4; }
+  .lm-step.current .lm-dot::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 2px solid rgba(65,172,164,.45); animation: lmPulse 2.2s ease-out infinite; }
+  @keyframes lmPulse { 0% { transform: scale(.85); opacity: 1; } 100% { transform: scale(1.25); opacity: 0; } }
+  .lm-step:not(.done):not(.current) .lm-txt b { color: var(--muted); }
+  .lm-body { margin: 10px 0 4px 62px; padding: 14px; border-radius: 18px; background: var(--glass); border: 1px solid var(--glass-line); color: var(--text); font-size: 14px; line-height: 1.5; }
+  .lm-body p { margin: 0 0 10px; }
+  .lm-next { display: inline-flex; align-items: center; gap: 8px; margin-top: 4px; height: 44px; padding: 0 18px; border: 0; border-radius: 99px; background: linear-gradient(135deg, #41aca4, #2a8fe0); color: #fff; font: 700 14px var(--font); box-shadow: 0 8px 20px rgba(65,172,164,.3); }
+  .lm-next svg.i { width: 18px; height: 18px; vertical-align: 0; }
+  /* Meta: bandera al final del camino; se ilumina al completar todo */
+  .lm-end { display: flex; align-items: center; gap: 14px; }
+  .lm-end .lm-dot { border-style: dashed; }
+  .lm-end.done .lm-dot { border-style: solid; border-color: transparent; background: linear-gradient(135deg, #f4c84a, #f08c00); color: #fff; animation: lmPop .7s var(--spring); }
+  .lm-end .lm-txt b { color: var(--muted); }
+  .lm-end.done .lm-txt b { color: var(--title); }
+  .lr-tip svg.i { margin-right: 4px; }
   .lr-intro { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; margin-bottom: 14px; border-radius: 20px; background: linear-gradient(135deg, rgba(31,111,209,.18), rgba(65,172,164,.2)); border: 1px solid var(--glass-line); }
   .lr-intro b { color: var(--title); font-size: 17px; }
   .lr-intro span { color: var(--muted); font-size: 13px; }
@@ -955,11 +1052,13 @@
   </div></div>
   <div id="demo" class="banner" hidden>Modo demostración · todo se guarda solo en este teléfono</div>
   <main id="view"></main>
-  <nav class="tabbar" id="tabbar" hidden><div class="in">
-    <button data-tab="inicio"><i class="q1">⌂</i><span>Inicio</span></button>
-    <button data-tab="cantos"><i class="q2">♫</i>Cantos</button>
-    <button data-tab="equipo"><i class="q3">👥</i>Equipo</button>
-    <button data-tab="mas"><i class="q4">⋯</i>Más</button>
+  <!-- Barra de abajo: una píldora flotante de vidrio, solo íconos de línea; la opción abierta
+       se marca con una píldora más clara que se desliza de una a otra. -->
+  <nav class="tabbar" id="tabbar" hidden><div class="in"><span class="tb-ind" aria-hidden="true"></span>
+    <button data-tab="cantos" aria-label="Cantos" title="Cantos"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l11-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="17" cy="16" r="3"/></svg></button>
+    <button data-tab="inicio" aria-label="Inicio" title="Inicio"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 10.5 12 3.5l8.5 7V19a1.5 1.5 0 0 1-1.5 1.5h-4v-6h-6v6H5A1.5 1.5 0 0 1 3.5 19Z"/></svg></button>
+    <button data-tab="equipo" aria-label="Equipo" title="Equipo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18.5 14.2A6.5 6.5 0 0 1 21.5 20"/></svg></button>
+    <button data-tab="aprende" aria-label="AprendeMe" title="AprendeMe"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 9 12 4.5 21.5 9 12 13.5Z"/><path d="M6.5 11v4.5c0 1.4 2.5 3 5.5 3s5.5-1.6 5.5-3V11"/><path d="M21.5 9v5"/></svg></button>
   </div></nav>
   <div class="sheet-bg" id="sheetBg"><div class="sheet" id="sheet"></div></div>
   <div class="toast" id="toast"></div>
@@ -967,7 +1066,7 @@
        teléfono), muestra qué pasó y un botón que borra la copia de la app (no los datos: esos
        están en la nube) y la vuelve a bajar. Va aparte para que funcione aunque app.js falle. -->
   <div id="rescue" hidden><div class="rs-card">
-    <div class="rs-ic">🛠</div><h3>La app no terminó de abrir</h3>
+    <div class="rs-ic"><svg viewBox="0 0 24 24" width="40" height="40" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.7 6.3a4 4 0 0 0 5 5L12 19a2.8 2.8 0 0 1-4-4Z"/><path d="M14.7 6.3 17 4M6 21l2-2"/></svg></div><h3>La app no terminó de abrir</h3>
     <p>Toca «Reparar y abrir»: se vuelve a bajar la app. Tus listas y cantos no se borran.</p>
     <pre id="rescueErr"></pre>
     <button type="button" id="rescueFix">Reparar y abrir</button>
