@@ -1,6 +1,6 @@
 // Service worker: la app abre al instante (y sin conexión muestra la última versión guardada).
 // Las listas se leen siempre de la nube; esto solo guarda los archivos de la app.
-const CACHE = 'listas-v24';
+const CACHE = 'listas-v25';
 const FILES = ['./', './index.html', './app.js', './config.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png', './medios-sol.png', './medios-aguila.png'];
 
 // Los archivos se piden siempre frescos al servidor (GitHub Pages deja que el teléfono los guarde
@@ -26,13 +26,21 @@ self.addEventListener('fetch', (e) => {
     return;
   }
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
-  e.respondWith(
-    fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' }).then((res) => {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(e.request, copy));
-      return res;
-    }).catch(() => caches.match(e.request).then((r) => r || caches.match('./index.html'))),
-  );
+  // Primero la red, pero sin esperar de más: si en 2.5 s no contesta (Wi-Fi lento), se abre con
+  // la copia guardada y la red termina de actualizarla por detrás. Antes se podía quedar mucho
+  // rato en negro o blanco esperando.
+  const nav = e.request.mode === 'navigate';
+  const fromNet = fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' }).then((res) => {
+    if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(nav ? './index.html' : e.request, copy)); }
+    return res;
+  });
+  e.waitUntil(fromNet.catch(() => {}));
+  e.respondWith((async () => {
+    const saved = await caches.match(nav ? './index.html' : e.request, { ignoreSearch: nav });
+    if (!saved) return fromNet.catch(() => caches.match('./index.html'));
+    const late = new Promise((ok) => setTimeout(() => ok(saved), 2500));
+    return Promise.race([fromNet.then((r) => (r.ok ? r : saved)).catch(() => saved), late]);
+  })());
 });
 // Aviso que llega de la nube con la app cerrada (lo manda la función «avisar» de Firebase).
 // Usa el mismo «tag» que el aviso de la app abierta: así nunca sale repetido.
