@@ -154,7 +154,8 @@ function demoBackend() {
   const touch = (date) => { if (db.services[date]) Object.assign(db.services[date], { changedAt: Date.now(), changedBy: 'demo' }); };
   return {
     demo: true,
-    onAuth(cb) { authCb = cb; setTimeout(() => cb({ uid: 'demo', email: 'demo@ejemplo.com' }), 0); },
+    // ?demo&login: abre en la pantalla de entrar (para probar y diseñar el login).
+    onAuth(cb) { authCb = cb; setTimeout(() => cb(new URLSearchParams(location.search).has('login') ? null : { uid: 'demo', email: 'demo@ejemplo.com' }), 0); },
     async signIn() {}, async signUp() {}, async reset() {}, async signOut() { toast('En la demostración no se cierra sesión'); },
     setDemoRole(role) { db.members.demo = { ...db.members.demo, role }; save(); },
     // Copia: así se nota cuando cambia el rol (comparando antes y después).
@@ -1196,28 +1197,87 @@ setTimeout(function waitView() {
 // ======================================================================================
 // Entrar
 // ======================================================================================
+// Pantalla de entrar: sigue a la bienvenida (mismo fondo y mismo logo del sol y el águila), con una
+// tarjeta de vidrio abajo. Recuerda el último correo usado en este teléfono.
+const LAST_EMAIL_KEY = 'listas-ultimo-correo';
+const LG_ICONS = {
+  mail: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m4 7 8 6 8-6"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2.5"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></svg>',
+  eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
+  eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.6A9.7 9.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3.2 3.9M6.2 6.9C3.9 8.6 2.5 12 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.1-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
+  arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+};
 function viewLogin() {
-  $('view').innerHTML = `<div class="login-wrap">${hero({ title: 'Bienvenido', tall: true })}<div class="sheetbody">
-    <p class="hello">Listas de alabanza</p><h2 class="big">Entra con tu correo</h2>
-    <input id="lgEmail" type="email" autocomplete="email" placeholder="tu@correo.com">
-    <input id="lgPass" type="password" autocomplete="current-password" placeholder="Contraseña (mínimo 6)">
-    <div class="err" id="lgErr"></div>
-    <button class="btn" id="lgIn">Entrar</button>
-    <button class="link center" id="lgReset">Olvidé mi contraseña</button>
-    <div class="hint">🔒 Las cuentas las crea un <b>moderador</b>. Pídele tu correo y tu contraseña. Al entrar, la app recuerda tu sesión.</div>
-    <div id="lgFirst"></div>
-  </div></div>`;
-  const err = (e) => { shake($('lgIn')); $('lgErr').textContent = authError(e); };
+  let last = '';
+  try { last = localStorage.getItem(LAST_EMAIL_KEY) || ''; } catch { /* sin almacenamiento */ }
+  $('view').innerHTML = `<div class="lg">
+    <div class="lg-sky" aria-hidden="true"><i></i><i></i><i></i></div>
+    <div class="lg-top">
+      <div class="lg-mark" aria-hidden="true"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></div>
+      <div class="lg-brand">LIS<span>T</span>AS</div>
+      <div class="lg-tag">Listas de alabanza</div>
+    </div>
+    <form class="lg-card" id="lgForm" novalidate>
+      <h2>${last ? 'Qué bueno verte' : 'Bienvenido'}</h2>
+      <p class="lg-sub">${last ? 'Entra para ver las listas del servicio.' : 'Entra con el correo que te dio tu moderador.'}</p>
+      <label class="lg-field">
+        <span class="lg-ic">${LG_ICONS.mail}</span>
+        <input id="lgEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" placeholder=" " value="${esc(last)}">
+        <span class="lg-label">Correo</span>
+      </label>
+      <label class="lg-field">
+        <span class="lg-ic">${LG_ICONS.lock}</span>
+        <input id="lgPass" type="password" autocomplete="current-password" placeholder=" ">
+        <span class="lg-label">Contraseña</span>
+        <button type="button" class="lg-eye" id="lgEye" aria-label="Mostrar la contraseña">${LG_ICONS.eye}</button>
+      </label>
+      <div class="lg-err" id="lgErr" role="alert"></div>
+      <button class="lg-go" id="lgIn" type="submit"><span>Entrar</span><i>${LG_ICONS.arrow}</i></button>
+      <button type="button" class="lg-forgot" id="lgReset">¿Olvidaste tu contraseña?</button>
+      <div id="lgFirst"></div>
+      <p class="lg-note">${LG_ICONS.lock}<span>Las cuentas las crea un <b>moderador</b>. Al entrar, este teléfono recuerda tu sesión.</span></p>
+    </form>
+  </div>`;
+  const form = $('lgForm');
+  const setErr = (t) => { $('lgErr').textContent = t || ''; form.classList.toggle('has-err', !!t); };
+  const err = (e) => { shake(form); setErr(authError(e)); };
   const vals = () => [$('lgEmail').value.trim(), $('lgPass').value];
-  $('lgIn').onclick = () => busy($('lgIn'), api.signIn(...vals())).catch(err);
-  $('lgPass').onkeydown = (e) => { if (e.key === 'Enter') $('lgIn').click(); };
+  ['lgEmail', 'lgPass'].forEach((id) => $(id).addEventListener('input', () => setErr('')));
+  // Ver u ocultar la contraseña (sin perder el lugar donde estabas escribiendo).
+  $('lgEye').onclick = () => {
+    const p = $('lgPass');
+    const show = p.type === 'password';
+    p.type = show ? 'text' : 'password';
+    $('lgEye').innerHTML = show ? LG_ICONS.eyeOff : LG_ICONS.eye;
+    $('lgEye').setAttribute('aria-label', show ? 'Ocultar la contraseña' : 'Mostrar la contraseña');
+    p.focus();
+  };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const [email, pass] = vals();
+    if (!email) { shake(form); setErr('Escribe tu correo'); $('lgEmail').focus(); return; }
+    if (!pass) { shake(form); setErr('Escribe tu contraseña'); $('lgPass').focus(); return; }
+    busy($('lgIn'), api.signIn(email, pass)).then(() => {
+      try { localStorage.setItem(LAST_EMAIL_KEY, email); } catch { /* sin almacenamiento */ }
+      // Entró: el botón se vuelve una palomita mientras abre la app.
+      $('lgIn') && $('lgIn').classList.add('ok');
+      if ($('lgIn')) $('lgIn').innerHTML = `<span>Listo</span><i>${LG_ICONS.check}</i>`;
+    }).catch(err);
+  };
+  // Si ya hay correo guardado, el cursor va directo a la contraseña.
+  setTimeout(() => { const f = last ? $('lgPass') : $('lgEmail'); if (f && !matchMedia('(hover: none)').matches) f.focus(); }, 700);
   // Solo la primera vez (nube vacía): crear la cuenta del moderador principal.
   api.hasOwner().then((has) => {
     if (has || !$('lgFirst')) return;
-    $('lgFirst').innerHTML = '<div class="hint"><b>Primera vez</b>: escribe arriba tu correo y una contraseña para crear la cuenta del <b>moderador principal</b>.<button class="btn ghost" id="lgUp" style="margin-top:10px">Crear cuenta de moderador</button></div>';
+    $('lgFirst').innerHTML = '<div class="lg-first"><b>Primera vez</b>: escribe arriba tu correo y una contraseña para crear la cuenta del <b>moderador principal</b>.<button type="button" class="lg-alt" id="lgUp">Crear cuenta de moderador</button></div>';
     $('lgUp').onclick = () => busy($('lgUp'), api.signUp(...vals())).catch(err);
   });
-  $('lgReset').onclick = () => { const e = $('lgEmail').value.trim(); if (!e) { $('lgErr').textContent = 'Escribe tu correo arriba'; return; } api.reset(e).then(() => toast('Te enviamos un correo para cambiar la contraseña')).catch(err); };
+  $('lgReset').onclick = () => {
+    const e = $('lgEmail').value.trim();
+    if (!e) { shake(form); setErr('Escribe tu correo arriba y vuelve a tocar aquí'); $('lgEmail').focus(); return; }
+    api.reset(e).then(() => { setErr(''); toast('Te enviamos un correo para cambiar la contraseña'); }).catch(err);
+  };
 }
 const AUTH_ERR = { 'auth/invalid-credential': 'Correo o contraseña incorrectos', 'auth/wrong-password': 'Correo o contraseña incorrectos', 'auth/user-not-found': 'Correo o contraseña incorrectos', 'auth/email-already-in-use': 'Ese correo ya tiene una cuenta', 'auth/weak-password': 'La contraseña debe tener al menos 6 caracteres', 'auth/invalid-email': 'Ese correo no es válido', 'auth/too-many-requests': 'Demasiados intentos: espera un momento', 'auth/requires-recent-login': 'Por seguridad, sal y vuelve a entrar para cambiar la contraseña', 'auth/network-request-failed': 'Sin conexión a internet', 'auth/operation-not-allowed': 'Falta activar «Correo electrónico/contraseña» en Firebase › Authentication', 'auth/unauthorized-domain': 'Esta dirección no está autorizada en Firebase › Authentication › Dominios autorizados', 'permission-denied': 'La nube no dejó guardar: revisa que las reglas estén publicadas' };
 const authError = (e) => AUTH_ERR[e && e.code] || (e && e.message) || 'Algo salió mal';
