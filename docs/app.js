@@ -2603,6 +2603,11 @@ function loadPdfJs() {
   }
   return pdfjsP;
 }
+// Cambiar de tono los charts en el lector (acordes y armadura del PDF, charts de texto). Apagado
+// por decisión del equipo (2026-11-18): los charts se ven tal como se subieron. El motor sigue aquí
+// porque la revisión del tono original (abajo) lo usa; con «true» se vuelve a activar todo.
+const TRANSPONER = false;
+
 // ¿En qué tono está un PDF? Se mira su primera página (lo que dice «Tonalidad…», la armadura y los
 // acordes). Se recuerda por archivo para no repetirlo. null si no se puede saber.
 const tonoPdfMem = new Map();
@@ -2764,7 +2769,7 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
   let cur = -1;
   // false: cada chart se ve en el tono de la lista; true: tal como se subió.
   let original = false;
-  const trDe = (id) => { const s = songById(id) || {}; const hacia = keys[id] || s.key || ''; const semi = original ? 0 : Transponer.intervalo(s.key, hacia); return semi ? { semi, desde: s.key, hacia } : null; };
+  const trDe = (id) => { if (!TRANSPONER) return null; const s = songById(id) || {}; const hacia = keys[id] || s.key || ''; const semi = original ? 0 : Transponer.intervalo(s.key, hacia); return semi ? { semi, desde: s.key, hacia } : null; };
   function build(i) {
     if (built.has(i) || i < 0 || i >= ids.length) return;
     const id = ids[i];
@@ -3059,7 +3064,7 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
     const k = keys[ids[i]] || s.key || '';
     el.querySelector('.cr-key').textContent = original && s.key ? s.key : k;
     // Si la lista lo pide en otro tono: selector «Original G | Lista A» en lugar de la nota sola.
-    const cambia = chart && s.key && k && Transponer.intervalo(s.key, k) !== 0;
+    const cambia = TRANSPONER && chart && s.key && k && Transponer.intervalo(s.key, k) !== 0;
     el.querySelector('.cr-key').hidden = !k || cambia;
     const seg = el.querySelector('.cr-trseg');
     seg.hidden = !cambia;
