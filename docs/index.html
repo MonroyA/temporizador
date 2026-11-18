@@ -1047,9 +1047,36 @@
     .cr-letra .cr-song { padding-left: max(16px, calc((100% - 820px) / 2)); padding-right: max(16px, calc((100% - 820px) / 2)); }
     .cr-top, .cr-nav { padding-left: max(12px, calc((100% - 900px) / 2)); padding-right: max(12px, calc((100% - 900px) / 2)); }
   }
-  /* Tablet acostada / iPad grande: un poco más de ancho para la lista */
-  @media (min-width: 1100px) {
-    .sheetbody { max-width: 900px; }
+  /* Tablet e iPad: las fechas de Inicio en cuadrícula (se ven todas, sin deslizar) y las
+     anteriores en dos columnas. */
+  @media (min-width: 700px) {
+    #dates { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; overflow: visible; scroll-snap-type: none; margin: 0; padding: 10px 0 16px; }
+    #dates .date-card { flex: none; }
+    #past { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 14px; align-items: start; }
+    #past > .empty { grid-column: 1 / -1; }
+    /* «‹ Seguir editando» en un renglón y más sólido (sobre el mosaico se perdía). */
+    .resume-chip { height: 42px; padding: 0 16px 0 10px; background: rgba(29,111,138,.96); border-color: rgba(255,255,255,.45); }
+    .resume-chip span { flex-direction: row; gap: 5px; align-items: baseline; font-size: 13.5px; }
+    .resume-chip b { font-size: 13.5px; }
+  }
+  /* iPad acostado / iPad Pro: la columna aprovecha el ancho (sin estirarse de más). */
+  @media (min-width: 900px) {
+    .sheetbody { max-width: min(1100px, calc(100% - 64px)); padding-left: 36px; padding-right: 36px; }
+    .hero .tools { padding: 0 max(24px, calc((100% - 1100px) / 2)); }
+    .hero h1 { left: max(28px, calc((100% - 1100px) / 2 + 36px)); }
+    .tabbar .in { max-width: 720px; }
+    .sheet { max-width: 720px; }
+  }
+  /* Tablet acostada (pantalla bajita): la cabecera más delgada para que quepa más lista. */
+  @media (min-width: 700px) and (max-height: 820px) and (orientation: landscape) {
+    :root { --hero-full: calc(158px + var(--safe-t)); }
+    body.demo { --hero-full: calc(176px + var(--safe-t)); }
+    .hero, .hero.tall { height: calc(158px + var(--safe-t)); }
+    body.demo .hero, body.demo .hero.tall { height: calc(176px + var(--safe-t)); }
+    /* La paloma más chica, entre «ALABANZA» y la tarjeta (que no la tape). */
+    .hl-art, .hero.tall .hl-art { width: 76px; height: 61px; top: calc(var(--safe-t) + 94px); }
+    body.demo .hl-art, body.demo .hero.tall .hl-art { top: calc(var(--safe-t) + 112px); }
+    .sheetbody { min-height: calc(100vh - 90px); }
   }
 
   @media (prefers-reduced-motion: reduce) {
