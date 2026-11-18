@@ -263,7 +263,9 @@ function demoBackend() {
     tempoStatus: () => tempoState,
     async addSong(song) {
       let id = uid8();
-      if (song.status === 'agregado' && tempoState !== 'none') id = await pushTempo(id, song, true);
+      // Con el Temporizador cerrado, el canto se guarda igual en la demostración (solo se avisa).
+      if (song.status === 'agregado' && tempoState === 'ok') id = await pushTempo(id, song, true);
+      else if (song.status === 'agregado' && tempoState === 'off') toast('El Temporizador no está abierto: el canto queda solo en esta demostración');
       db.songs[id] = { ...song, at: Date.now(), shared: song.status === 'agregado' && tempoState === 'ok' };
       save(); return id;
     },
@@ -271,7 +273,7 @@ function demoBackend() {
       const cur = mergedSongs().find((s) => s.id === id) || {};
       const next = { ...cur, ...patch };
       // Si es (o pasa a ser) un canto agregado, la letra también se guarda en el Temporizador.
-      if (next.status === 'agregado' && tempoState !== 'none' && ['title', 'author', 'text', 'status'].some((k) => k in patch)) await pushTempo(id, next, false);
+      if (next.status === 'agregado' && tempoState === 'ok' && ['title', 'author', 'text', 'status'].some((k) => k in patch)) await pushTempo(id, next, false);
       db.songs[id] = { ...(db.songs[id] || cur), ...patch, shared: next.status === 'agregado' && (cur.shared || tempoState === 'ok') };
       save();
     },
@@ -1869,6 +1871,722 @@ function renderNetBanner() {
 addEventListener('online', renderNetBanner);
 addEventListener('offline', renderNetBanner);
 
+// ---- Transponer charts (acordes del PDF, armadura del pentagrama y charts de texto) ----
+// semi: semitonos a subir (0–11). Los nombres nuevos se escriben con ♯ o ♭ según el tono destino.
+const Transponer = (() => {
+  const SH = ['C', 'C♯', 'D', 'D♯', 'E', 'F', 'F♯', 'G', 'G♯', 'A', 'A♯', 'B'];
+  const FL = ['C', 'D♭', 'D', 'E♭', 'E', 'F', 'G♭', 'G', 'A♭', 'A', 'B♭', 'B'];
+  // En C (sin ♯ ni ♭) lo más común en los charts: B♭, E♭, A♭ y C♯, F♯.
+  const MIX = ['C', 'C♯', 'D', 'E♭', 'E', 'F', 'F♯', 'G', 'A♭', 'A', 'B♭', 'B'];
+  const BASE = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 };
+  const alt = (a) => (a === '♯' || a === '#' ? 1 : a === '♭' || a === 'b' ? -1 : 0);
+  // Mayores que se escriben con bemoles (F, B♭, E♭, A♭, D♭, G♭).
+  const FLAT_MAJ = new Set([5, 10, 3, 8, 1, 6]);
+  // Armadura de cada mayor: + sostenidos, − bemoles.
+  const SIG = { 0: 0, 7: 1, 2: 2, 9: 3, 4: 4, 11: 5, 6: -6, 5: -1, 10: -2, 3: -3, 8: -4, 1: -5 };
+  const SIG_INV = Object.fromEntries(Object.entries(SIG).map(([pc, n]) => [n, Number(pc)]));
+  SIG_INV[6] = 6; SIG_INV[7] = 1; SIG_INV[-7] = 11; SIG_INV[-6] = 6;
+
+  // «E», «F#», «B♭», «Am», «C#m» → { pc, minor, major }
+  function tono(k) {
+    const m = /^\s*([A-G])(♯|#|♭|b)?\s*(m(?!aj))?/i.exec(String(k || ''));
+    if (!m) return null;
+    const pc = (BASE[m[1].toUpperCase()] + alt(m[2]) + 12) % 12;
+    const minor = !!m[3];
+    return { pc, minor, major: minor ? (pc + 3) % 12 : pc };
+  }
+  // Semitonos de «desde» a «hacia» (0 si falta alguno).
+  function intervalo(desde, hacia) {
+    const a = tono(desde), b = tono(hacia);
+    if (!a || !b) return 0;
+    return (b.pc - a.pc + 12) % 12;
+  }
+  const nombresPara = (hacia) => { const b = tono(hacia); return !b ? SH : b.major === 0 ? MIX : FLAT_MAJ.has(b.major) ? FL : SH; };
+  const nota = (n, a, semi, names) => names[(BASE[n] + alt(a) + semi + 24) % 12];
+  const RAIZ = /^([A-G])(♯|#|♭|b)?/;
+  // Un acorde de texto: cambia la letra del principio y la del bajo («/X»).
+  function acorde(s, semi, names) {
+    return s.replace(RAIZ, (_, n, a) => nota(n, a, semi, names)).replace(/\/([A-G])(♯|#|♭|b)?/, (_, n, a) => '/' + nota(n, a, semi, names));
+  }
+  // ¿Es un acorde? (A, Am7, C#m7b5, Gmaj7, D/F#, Bsus4, Eadd9, F#ø, B°, Asus2/C#…)
+  const ES_ACORDE = /^[A-G](♯|#|♭|b)?([Mm]aj|m|M|min|dim|aug|sus|add|°|ø|Δ|\+|-)?[0-9]*(\([^)]*\))?([#b♯♭+-]?[0-9]+|sus[24]?|add[0-9]+|[Mm]aj[0-9]*|m)*(\([^)]*\))?(\/[A-G](♯|#|♭|b)?)?$/;
+  // Chart de texto: solo se tocan los renglones que son de acordes; si un acorde crece, usa los
+  // espacios que le siguen para que lo demás no se corra.
+  function chartTexto(txt, semi, names) {
+    if (!semi) return txt;
+    return String(txt).split('\n').map((line) => {
+      const toks = line.trim().split(/\s+/).filter(Boolean);
+      if (!toks.length) return line;
+      const acordes = toks.filter((t) => ES_ACORDE.test(t.replace(/[|()]/g, '')) || /^[|:%.x/-]+$/.test(t));
+      if (acordes.length / toks.length < 0.8) return line; // es letra
+      let out = '';
+      let debe = 0; // caracteres de más que hay que compensar
+      for (const part of line.split(/(\s+)/)) {
+        if (/^\s+$/.test(part)) { const keep = Math.max(1, part.length - debe); debe -= part.length - keep; out += ' '.repeat(keep); continue; }
+        const neu = ES_ACORDE.test(part) ? acorde(part, semi, names) : part;
+        debe += neu.length - part.length;
+        out += neu;
+      }
+      return out;
+    }).join('\n');
+  }
+
+  // ---------- PDF ----------
+  // Dibuja ♯ o ♭ (vectores: se ve igual en cualquier teléfono). (x, y) = centro de la nota.
+  function sost(ctx, x, y, sp) {
+    const w = sp * 0.82, h = sp * 2.9;
+    ctx.save();
+    ctx.lineCap = 'butt';
+    ctx.lineWidth = Math.max(1, sp * 0.11);
+    ctx.beginPath();
+    ctx.moveTo(x - w * 0.18, y - h / 2 + sp * 0.12); ctx.lineTo(x - w * 0.18, y + h / 2);
+    ctx.moveTo(x + w * 0.18, y - h / 2); ctx.lineTo(x + w * 0.18, y + h / 2 - sp * 0.12);
+    ctx.stroke();
+    ctx.lineWidth = Math.max(1.5, sp * 0.3);
+    ctx.beginPath();
+    ctx.moveTo(x - w / 2, y - sp * 0.32 + sp * 0.12); ctx.lineTo(x + w / 2, y - sp * 0.32 - sp * 0.12);
+    ctx.moveTo(x - w / 2, y + sp * 0.42 + sp * 0.12); ctx.lineTo(x + w / 2, y + sp * 0.42 - sp * 0.12);
+    ctx.stroke();
+    ctx.restore();
+  }
+  function bemol(ctx, x, y, sp) {
+    sp *= 1.18; // del tamaño de los bemoles de los charts
+    ctx.save();
+    ctx.lineWidth = Math.max(1, sp * 0.12);
+    ctx.beginPath();
+    ctx.moveTo(x - sp * 0.3, y - sp * 1.9); ctx.lineTo(x - sp * 0.3, y + sp * 0.5);
+    ctx.stroke();
+    ctx.lineWidth = Math.max(1.2, sp * 0.2);
+    ctx.beginPath();
+    ctx.moveTo(x - sp * 0.3, y - sp * 0.05);
+    ctx.bezierCurveTo(x + sp * 0.15, y - sp * 0.55, x + sp * 0.75, y - sp * 0.3, x + sp * 0.35, y + sp * 0.1);
+    ctx.lineTo(x - sp * 0.3, y + sp * 0.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // ♯ y ♭ de los acordes (cuando la letra del PDF no los trae). x = borde izquierdo, cy = centro,
+  // S = tamaño de la letra.
+  function sostAcorde(ctx, x, cy, S) {
+    const w = S * 0.36, h = S * 0.6;
+    ctx.save();
+    ctx.lineCap = 'butt';
+    ctx.lineWidth = Math.max(1, S * 0.05);
+    ctx.beginPath();
+    ctx.moveTo(x + w * 0.36, cy - h / 2 + S * 0.03); ctx.lineTo(x + w * 0.36, cy + h / 2);
+    ctx.moveTo(x + w * 0.64, cy - h / 2); ctx.lineTo(x + w * 0.64, cy + h / 2 - S * 0.03);
+    ctx.stroke();
+    ctx.lineWidth = Math.max(1.2, S * 0.085);
+    ctx.beginPath();
+    ctx.moveTo(x, cy - S * 0.1 + S * 0.035); ctx.lineTo(x + w, cy - S * 0.1 - S * 0.035);
+    ctx.moveTo(x, cy + S * 0.12 + S * 0.035); ctx.lineTo(x + w, cy + S * 0.12 - S * 0.035);
+    ctx.stroke();
+    ctx.restore();
+  }
+  function bemolAcorde(ctx, x, cy, S) {
+    const xs = x + S * 0.04, top = cy - S * 0.42, bot = cy + S * 0.2;
+    ctx.save();
+    ctx.lineWidth = Math.max(1, S * 0.055);
+    ctx.beginPath(); ctx.moveTo(xs, top); ctx.lineTo(xs, bot); ctx.stroke();
+    ctx.lineWidth = Math.max(1.2, S * 0.075);
+    ctx.beginPath();
+    ctx.moveTo(xs, cy - S * 0.02);
+    ctx.bezierCurveTo(xs + S * 0.1, cy - S * 0.14, xs + S * 0.3, cy - S * 0.1, xs + S * 0.2, cy + S * 0.04);
+    ctx.lineTo(xs, bot);
+    ctx.stroke();
+    ctx.restore();
+  }
+  // ¿La letra del PDF trae este signo? Con otra letra de respaldo el ancho cambiaría.
+  const glifos = new Map();
+  function tieneGlifo(font, ch) {
+    font = String(font).split(',')[0];
+    const k = font + '|' + ch;
+    if (glifos.has(k)) return glifos.get(k);
+    const c = document.createElement('canvas').getContext('2d');
+    c.font = `40px ${font}, monospace`; const a = c.measureText(ch).width;
+    c.font = `40px ${font}, serif`; const b = c.measureText(ch).width;
+    c.font = `40px ${font}, sans-serif`; const s = c.measureText(ch).width;
+    const ok = Math.abs(a - b) < 0.05 && Math.abs(a - s) < 0.05;
+    glifos.set(k, ok);
+    return ok;
+  }
+  // Posición de cada ♯ y ♭ de la armadura en clave de sol (pasos desde la 1.ª línea, de abajo).
+  const POS_SOST = [8, 5, 9, 6, 3, 7, 4];
+  const POS_BEM = [4, 7, 3, 6, 2, 5, 1];
+
+  // Renglones del pentagrama: 5 líneas largas y parejas. Devuelve [{ ys:[5], sp, t, x0, x1 }].
+  function pentagramas(img, W, H) {
+    const d = img.data;
+    const dark = (x, y) => { const i = (y * W + x) * 4; return d[i] + d[i + 1] + d[i + 2] < 480 && d[i + 3] > 100; };
+    // Filas casi negras a lo largo (una línea del pentagrama cruza la página).
+    const filas = [];
+    const xs = [];
+    for (let k = 0; k < 24; k++) xs.push(Math.round(W * (0.1 + 0.8 * (k / 23))));
+    for (let y = 0; y < H; y++) {
+      let n = 0;
+      for (const x of xs) if (dark(x, y) || (x + 1 < W && dark(x + 1, y)) || (x > 0 && dark(x - 1, y))) n++;
+      if (n >= 18) filas.push(y);
+    }
+    const lineas = [];
+    for (const y of filas) {
+      const last = lineas[lineas.length - 1];
+      if (last && y - last.b <= 1) last.b = y; else lineas.push({ a: y, b: y });
+    }
+    const cs = lineas.map((l) => ({ y: (l.a + l.b) / 2, t: l.b - l.a + 1 }));
+    const out = [];
+    for (let i = 0; i + 4 < cs.length; i++) {
+      const g = cs.slice(i, i + 5);
+      const gaps = g.slice(1).map((c, k) => c.y - g[k].y);
+      const sp = gaps.reduce((a, b) => a + b, 0) / 4;
+      if (sp < 4 || gaps.some((x) => Math.abs(x - sp) > sp * 0.18)) continue;
+      // Bordes: donde empieza y termina la línea del medio.
+      const ym = Math.round(g[2].y);
+      let x0 = 0; while (x0 < W && !dark(x0, ym)) x0++;
+      let x1 = W - 1; while (x1 > 0 && !dark(x1, ym)) x1--;
+      out.push({ ys: g.map((c) => c.y), sp, t: Math.max(1, Math.round(g.reduce((a, c) => a + c.t, 0) / 5)), x0, x1 });
+      i += 4;
+    }
+    return out;
+  }
+  // Manchas de tinta (sin las líneas del pentagrama) entre xA y xB: columnas con tinta agrupadas.
+  function manchas(img, W, st, xA, xB) {
+    const d = img.data;
+    const top = Math.max(0, Math.round(st.ys[0] - st.sp * 2.2));
+    const bot = Math.round(st.ys[4] + st.sp * 1.6);
+    const enLinea = (y) => st.ys.some((ly) => Math.abs(y - ly) <= st.t / 2 + 0.6);
+    // Cada figura por separado (piezas de tinta conectadas), aunque dos figuras se toquen en vertical
+    // (un ♭ junto al compás, una caja de «Coro» encima). Las filas de las líneas no cuentan como
+    // tinta, pero una figura que las cruza sigue siendo una sola.
+    const X0 = Math.max(0, xA), X1 = Math.min(W - 1, xB), w = X1 - X0 + 1;
+    const filas = [];
+    for (let y = top; y <= bot; y++) if (!enLinea(y)) filas.push(y);
+    const R = filas.length;
+    if (w <= 0 || !R) return [];
+    const par = new Int32Array(w * R).fill(-1);
+    const raiz = (i) => { while (par[i] !== i) { par[i] = par[par[i]]; i = par[i]; } return i; };
+    const une = (a, b) => { a = raiz(a); b = raiz(b); if (a !== b) par[a < b ? b : a] = a < b ? a : b; };
+    for (let r = 0; r < R; r++) {
+      const y = filas[r];
+      const pega = r > 0 && y - filas[r - 1] <= st.t + 3;
+      const fila = y * W;
+      for (let c = 0; c < w; c++) {
+        const i = (fila + X0 + c) * 4;
+        if (!(d[i] + d[i + 1] + d[i + 2] < 360 && d[i + 3] > 100)) continue;
+        const id = r * w + c;
+        par[id] = id;
+        if (c > 0 && par[id - 1] >= 0) une(id, id - 1);
+        if (pega) {
+          const up = id - w;
+          if (par[up] >= 0) une(id, up);
+          if (c > 0 && par[up - 1] >= 0) une(id, up - 1);
+          if (c + 1 < w && par[up + 1] >= 0) une(id, up + 1);
+        }
+      }
+    }
+    const comp = new Map();
+    for (let r = 0; r < R; r++) for (let c = 0; c < w; c++) {
+      const id = r * w + c;
+      if (par[id] < 0) continue;
+      const k = raiz(id);
+      const x = X0 + c, y = filas[r];
+      const m = comp.get(k);
+      if (!m) comp.set(k, { x0: x, x1: x, a: y, b: y, n: 1 });
+      else { if (x < m.x0) m.x0 = x; if (x > m.x1) m.x1 = x; if (y > m.b) m.b = y; m.n++; }
+    }
+    // Lo que queda del todo arriba o abajo del pentagrama (números de compás, letras, cajas de
+    // sección) no es armadura ni barra.
+    const res = [...comp.values()]
+      .filter((m) => m.n >= 3 && m.b >= st.ys[0] - st.sp * 0.6 && m.a <= st.ys[4] + st.sp * 0.6)
+      .sort((p, q) => p.x0 - q.x0);
+    // Piezas sueltas de un mismo signo (la panza de un ♭ separada de su palo por un trazo muy fino):
+    // una mancha baja, pegada y dentro de la altura de la anterior es parte de ella.
+    const out = [];
+    for (const m of res) {
+      const p = out[out.length - 1];
+      if (p && m.x0 - p.x1 <= Math.max(2, st.sp * 0.65) && m.b - m.a < st.sp * 1.2 && m.a >= p.a - 1 && m.b <= p.b + Math.max(2, st.sp * 0.4) && p.b - p.a >= st.sp * 1.5 && p.x1 - p.x0 < st.sp * 0.6) {
+        p.x1 = m.x1; p.n += m.n;
+      } else out.push(m);
+    }
+    return out;
+  }
+  // Busca una armadura (♯ o ♭ en su posición) empezando en la mancha «i». Devuelve { n, tipo, ms }.
+  function armaduraDesde(ms, i, st) {
+    const y1 = st.ys[4];
+    const paso = (s) => y1 - s * (st.sp / 2);
+    for (const tipo of ['s', 'b']) {
+      const pos = tipo === 's' ? POS_SOST : POS_BEM;
+      const ok = [];
+      for (let k = 0; k < 7 && i + k < ms.length; k++) {
+        const m = ms[i + k];
+        const w = m.x1 - m.x0 + 1, h = m.b - m.a + 1;
+        if (w < st.sp * 0.35 || w > st.sp * 1.4 || h < st.sp * 1.9 || h > st.sp * 4.3) break;
+        if (k && m.x0 - ok[k - 1].x1 > st.sp * 1.1) break;
+        const cy = tipo === 's' ? (m.a + m.b) / 2 : m.b - st.sp * 0.5;
+        if (Math.abs(cy - paso(pos[k])) > st.sp * 0.55) break;
+        ok.push(m);
+      }
+      if (ok.length) return { n: ok.length, tipo, ms: ok };
+    }
+    return null;
+  }
+  // Transpone las armaduras de una página ya dibujada en «ctx».
+  function armaduras(ctx, semi, names) {
+    const W = ctx.canvas.width, H = ctx.canvas.height;
+    const img = ctx.getImageData(0, 0, W, H);
+    const sts = pentagramas(img, W, H);
+    const hechos = [];
+    const mapas = [];
+    // Hace lugar para una armadura más larga: lo que sigue en el renglón (compás, notas, acordes,
+    // letra) se recorre a la derecha y se angosta un poco, hasta el final del pentagrama.
+    const hacerLugar = (st, si, xS, xE, falta, xA, papel, xMin) => {
+      // La franja empieza y termina en una fila sin tinta (así no se parte un título o una letra):
+      // se busca desde el borde (mitad entre renglones) hacia el pentagrama.
+      // (Solo cuenta la tinta oscura: una marca de agua gris clara no corta nada.)
+      const vacia = (y) => { for (let x = xS; x < xE; x++) { const i = (y * W + x) * 4; if (img.data[i] + img.data[i + 1] + img.data[i + 2] < 420) return false; } return true; };
+      // Los acordes de arriba son de este renglón y la letra de abajo también: la franja empieza
+      // debajo de la letra del renglón anterior y termina antes de los acordes del siguiente.
+      let top = Math.max(0, Math.round(si > 0 ? Math.min(sts[si - 1].ys[4] + st.sp * 3, (sts[si - 1].ys[4] + st.ys[0]) / 2) : st.ys[0] - st.sp * 7));
+      while (top < st.ys[0] - st.sp * 1.5 && !vacia(top)) top++;
+      let bot = Math.min(H - 1, Math.round(si < sts.length - 1 ? Math.max(sts[si + 1].ys[0] - st.sp * 3, (st.ys[4] + sts[si + 1].ys[0]) / 2) : st.ys[4] + st.sp * 7));
+      while (bot > st.ys[4] + st.sp * 1.5 && !vacia(bot)) bot--;
+      // Sin un borde limpio se partiría algo: mejor no recorrer (la armadura se aprieta).
+      if (!vacia(top) || !vacia(bot)) return false;
+      // El corte va en una columna sin tinta (fuera de las líneas), así no se parte un recuadro
+      // como «Melodía» que pase por ahí. Si no hay, la franja se achica para dejarlo afuera.
+      const linea = (y) => st.ys.some((ly) => Math.abs(y - ly) <= st.t / 2 + 1);
+      const tinta = (x, y) => { const i = (y * W + x) * 4; return img.data[i] + img.data[i + 1] + img.data[i + 2] < 420; };
+      const colLibre = (x) => { for (let y = top; y <= bot; y++) if (!linea(y) && tinta(x, y)) return false; return true; };
+      let x = xS;
+      while (x > xMin && !colLibre(x)) x--;
+      if (colLibre(x)) xS = x;
+      else {
+        for (let y = top; y < st.ys[0] - st.t; y++) if (tinta(xS, y)) top = y + 1;
+        for (let y = bot; y > st.ys[4] + st.t; y--) if (tinta(xS, y)) bot = y - 1;
+      }
+      const w = xE - xS, h = bot - top;
+      const tmp = document.createElement('canvas');
+      tmp.width = w; tmp.height = h;
+      tmp.getContext('2d').drawImage(ctx.canvas, xS, top, w, h, 0, 0, w, h);
+      ctx.save();
+      ctx.fillStyle = papel;
+      ctx.fillRect(xS, top, w, h);
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(tmp, 0, 0, w, h, xS + falta, top, w - falta, h);
+      // Las líneas del pentagrama en el hueco nuevo (con su color limpio de antes de la armadura).
+      for (const ly of st.ys) {
+        for (let y = Math.floor(ly - st.t / 2 - 0.75); y <= Math.ceil(ly + st.t / 2 + 0.75); y++) {
+          const s = (y * W + Math.max(0, xA - 4)) * 4;
+          ctx.fillStyle = `rgb(${img.data[s]},${img.data[s + 1]},${img.data[s + 2]})`;
+          ctx.fillRect(xS, y, falta + 1, 1);
+        }
+      }
+      ctx.restore();
+      mapas.push({ top, bot, xS, d: falta, f: (w - falta) / w });
+      return true;
+    };
+    for (let si = 0; si < sts.length; si++) {
+      const st = sts[si];
+      const ms = manchas(img, W, st, st.x0, st.x1);
+      // 1) Al inicio del renglón: la clave es la primera mancha; la armadura viene después.
+      const lugares = [];
+      // (Antes de la clave puede haber una llave o marquitas del sistema: la clave es la primera
+      // mancha muy alta.)
+      const clave = ms.slice(0, 5).findIndex((m) => m.b - m.a >= st.sp * 4.5);
+      if (ms.length > 1) {
+        // Piezas de la misma clave (en tamaño chico se parte) no cuentan.
+        let i = clave >= 0 ? clave + 1 : 1;
+        if (clave >= 0) while (ms[i] && ms[i].x0 < ms[clave].x1 - 1) i++;
+        lugares.push({ i });
+      }
+      // 2) Después de una doble barra (cambio de tono a la mitad o al final del renglón).
+      ms.forEach((m, i) => {
+        const w = m.x1 - m.x0 + 1, h = m.b - m.a + 1;
+        const barra = w <= Math.max(3, st.sp * 0.45) && h >= st.sp * 3.6;
+        const sig = ms[i + 1];
+        if (barra && sig && sig.x0 - m.x1 < st.sp * 1.1 && (sig.x1 - sig.x0) <= Math.max(3, st.sp * 0.45) && sig.b - sig.a >= st.sp * 3.6) lugares.push({ i: i + 2 });
+      });
+      // De derecha a izquierda: si hay que hacer lugar, no cambia la posición de los que faltan.
+      lugares.sort((a, b) => b.i - a.i);
+      for (const l of lugares) {
+        // Los becuadros que cancelan la armadura anterior se dejan como están.
+        let i = l.i;
+        let arm = armaduraDesde(ms, i, st);
+        if (!arm) continue;
+        const n0 = arm.tipo === 's' ? arm.n : -arm.n;
+        const mayor = SIG_INV[n0];
+        if (mayor == null) continue;
+        // F♯ o G♭ (6): como escriba el tono principal (con ♯ o con ♭).
+        const pcN = (mayor + semi) % 12;
+        const n1 = pcN === 6 ? (names === SH ? 6 : -6) : SIG[pcN];
+        // Espacio: desde la 1.ª ♯/♭ hasta la siguiente tinta, o hasta el final del renglón.
+        const ultima = arm.ms[arm.n - 1];
+        const sigM = ms[ms.indexOf(ultima) + 1];
+        const alFinal = !sigM;
+        const xA = arm.ms[0].x0;
+        const pasoStd = arm.n > 1 ? (ultima.x0 - arm.ms[0].x0) / (arm.n - 1) : st.sp * 1.15;
+        const cuantos = Math.abs(n1);
+        const necesita = cuantos ? (cuantos - 1) * pasoStd + st.sp * 0.95 : 0;
+        let xFin = sigM ? sigM.x0 - st.sp * 0.5 : st.x1 - st.sp * 0.15;
+        // Al final del renglón (aviso del cambio de tono): si no cabe, el pentagrama se alarga un poco.
+        let extender = 0;
+        if (alFinal && xA + necesita > xFin) { extender = Math.min(W - 4 - st.x1, Math.ceil(xA + necesita - xFin + st.sp * 0.3)); xFin += extender; }
+        const pi = (Math.round(st.ys[0] - st.sp * 0.5) * W + Math.max(0, xA - 3)) * 4;
+        const pr = img.data[pi], pg = img.data[pi + 1], pb = img.data[pi + 2];
+        // A la mitad o al inicio del renglón: si no cabe, se hace lugar recorriendo lo que sigue.
+        if (!alFinal && cuantos && xA + necesita > xFin) {
+          const falta = Math.ceil(xA + necesita - xFin + st.sp * 0.25);
+          const xS = Math.max(ultima.x1 + 1, Math.round(sigM.x0 - st.sp * 0.3));
+          const xE = Math.min(W - 1, st.x1 + 2);
+          if (xE - xS > falta * 5 && hacerLugar(st, si, xS, xE, falta, xA, `rgb(${pr},${pg},${pb})`, ultima.x1 + 2)) xFin += falta;
+        }
+        const disp = xFin - xA;
+        let paso = pasoStd, k = 1;
+        if (cuantos > 1 && necesita > disp) {
+          paso = Math.max(st.sp * 0.58, (disp - st.sp * 0.85) / (cuantos - 1));
+          k = Math.max(0.6, Math.min(1, paso / pasoStd + 0.1));
+        }
+        // Borra la armadura vieja con el color del papel (un poco más ancho para no dejar restos),
+        // sin tocar las líneas del pentagrama.
+        const xB = Math.round(Math.max(ultima.x1 + 3, Math.min(xFin, xA + st.sp * 0.4 + (cuantos - 1) * paso + st.sp * 0.6)));
+        const yA = Math.min(...arm.ms.map((m) => m.a)) - 5, yB = Math.max(...arm.ms.map((m) => m.b)) + 4;
+        const rx = Math.max(0, xA - 3), rw = Math.min(W - rx, xB - rx + 1), ry = Math.max(0, yA), rh = Math.min(H - ry, yB - ry);
+        const part = ctx.getImageData(rx, ry, rw, rh);
+        const enLinea = (y) => st.ys.some((ly) => Math.abs(y - ly) <= st.t / 2 + 0.75);
+        for (let yy = 0; yy < rh; yy++) {
+          if (enLinea(ry + yy)) {
+            // En las filas de cada línea: el color limpio de esa misma línea (tomado justo antes de la
+            // armadura), así se borran los trazos de los ♯/♭ que la cruzaban y donde el pentagrama
+            // se alarga queda igual.
+            const src = ((ry + yy) * W + Math.max(0, xA - 4)) * 4;
+            for (let xx = 0; xx < rw; xx++) { const o = (yy * rw + xx) * 4; part.data[o] = img.data[src]; part.data[o + 1] = img.data[src + 1]; part.data[o + 2] = img.data[src + 2]; part.data[o + 3] = 255; }
+            continue;
+          }
+          for (let xx = 0; xx < rw; xx++) { const o = (yy * rw + xx) * 4; part.data[o] = pr; part.data[o + 1] = pg; part.data[o + 2] = pb; part.data[o + 3] = 255; }
+        }
+        ctx.putImageData(part, rx, ry);
+        // La armadura nueva.
+        if (cuantos) {
+          ctx.strokeStyle = '#000';
+          const pos = n1 > 0 ? POS_SOST : POS_BEM;
+          for (let j = 0; j < cuantos; j++) {
+            const x = xA + st.sp * 0.4 * k + j * paso;
+            const y = st.ys[4] - pos[j] * (st.sp / 2);
+            if (n1 > 0) sost(ctx, x, y, st.sp * k); else bemol(ctx, x, y, st.sp * k);
+          }
+        }
+        hechos.push({ desde: n0, hacia: n1, y: Math.round(st.ys[0]), x: xA, top: st.ys[0], bot: st.ys[4] });
+      }
+    }
+    hechos.sts = sts; // los renglones, para saber qué texto está encima de un pentagrama
+    hechos.mapas = mapas; // dónde se recorrió el renglón (los acordes se mueven igual)
+    return hechos;
+  }
+
+  // Un texto del PDF partido en acordes: «Cm7 B♭» → Cm7, B♭; «B♭/DE♭» (dos acordes pegados) →
+  // B♭/D, E♭. Si alguna parte no es acorde («Có», «Génesis», «CHORUS») → null: es letra o título.
+  const PIEZA = /[A-G](?:♯|#|♭|b)?[^\sA-G/]*(?:\/[A-G](?:♯|#|♭|b)?)?/g;
+  const sufijoOk = (s) => /^[mM0-9()+\-−°øΔ#b♯♭,.\u00B0\u2070-\u209F\uE000-\uF8FF]*$/.test(s.replace(/maj|min|dim|aug|sus|add|alt|omit|no/gi, ''));
+  function piezasAcorde(str) {
+    const out = [];
+    const re = /\S+/g;
+    let t;
+    while ((t = re.exec(str))) {
+      const tok = t[0];
+      const ps = [...tok.matchAll(PIEZA)];
+      if (!ps.length || ps.map((p) => p[0]).join('') !== tok) return null;
+      for (const p of ps) {
+        const raiz = RAIZ.exec(p[0])[0];
+        if (!sufijoOk(p[0].slice(raiz.length).split('/')[0])) return null;
+        out.push({ i: t.index + p.index, txt: p[0] });
+      }
+    }
+    return out.length ? out : null;
+  }
+  const TONALIDAD = /^(\s*(?:Tonalidad|Tono|Key)\s*:?\s*)([A-G](?:♯|#|♭|b)?)(m?)\s*$/i;
+
+  // Según el programa (y la versión de pdf.js), «E♭m7» puede llegar partido en «E», «♭», «m7»:
+  // se juntan los pedazos seguidos del mismo renglón.
+  function unirPedazos(items) {
+    const out = [];
+    for (let k = 0; k < items.length; k++) {
+      let it = items[k];
+      while (it.str && it.str.trim() && k + 1 < items.length) {
+        const nx = items[k + 1];
+        if (!nx.str || !nx.str.trim() || /^\s/.test(nx.str) || /\s$/.test(it.str)) break;
+        const h = it.height || 1;
+        const gap = nx.transform[4] - (it.transform[4] + it.width);
+        if (Math.abs(nx.transform[5] - it.transform[5]) > h * 0.25 || gap < -h * 0.1 || gap > h * 0.12 || Math.abs((nx.height || h) - h) > h * 0.3) break;
+        it = { ...it, str: it.str + nx.str, width: nx.transform[4] + nx.width - it.transform[4] };
+        k++;
+      }
+      out.push(it);
+    }
+    return out;
+  }
+
+  // Acordes del PDF: solo la letra (con su ♯/♭) y el bajo; lo pegado (m, 7, 9, Δ…) queda igual.
+  function acordesPdf(ctx, tc, vp, semi, names, Util, arms = []) {
+    tc = { ...tc, items: unirPedazos(tc.items) };
+    // ♯ o ♭ según la armadura (ya transpuesta) del renglón donde está el acorde.
+    const nombresEn = (x, y) => {
+      const delRenglon = arms.filter((a) => y < a.top + 2 && y > a.top - (a.bot - a.top) * 1.8);
+      if (!delRenglon.length) return names;
+      const a = delRenglon.filter((r) => r.x <= x + 2).sort((p, q) => q.x - p.x)[0] || delRenglon.sort((p, q) => p.x - q.x)[0];
+      return a.hacia < 0 ? FL : a.hacia > 0 ? SH : MIX;
+    };
+    // El tamaño de los acordes: el texto más común que empieza con A–G (los títulos y cuadros de
+    // sección tienen otro tamaño).
+    const cuenta = {};
+    for (const it of tc.items) if (RAIZ.test(it.str) && it.str.length <= 12) { const h = it.height.toFixed(1); cuenta[h] = (cuenta[h] || 0) + 1; }
+    const hAc = Number(Object.entries(cuenta).sort((a, b) => b[1] - a[1])[0]?.[0] || 0);
+    let n = 0;
+    let nm = names;
+    // Solo el texto que está encima de un pentagrama (la letra va debajo y los títulos lejos).
+    const sts = arms.sts || [];
+    const enZona = (y) => !sts.length || sts.some((st) => y > st.ys[0] - st.sp * 5.5 && y < st.ys[0] + st.sp * 0.5);
+    // ra: ancho real del texto en el PDF ÷ ancho con la letra que tiene el teléfono (si el PDF no
+    // trae todas las letras, el teléfono usa otra parecida y así se mantiene el tamaño).
+    // Ancho de una nota nueva («C♯»): la letra y el ♯/♭ chico (de la letra del PDF o dibujado).
+    const anchoNota = (neu, size, font) => {
+      ctx.font = `${size}px ${font}`;
+      const wL = ctx.measureText(neu[0]).width;
+      const signo = neu.slice(1);
+      if (!signo) return wL;
+      if (!tieneGlifo(font, signo)) return wL + size * (signo === '♯' ? 0.42 : 0.34);
+      ctx.font = `${size * 0.72}px ${font}`;
+      return wL + ctx.measureText(signo).width;
+    };
+    // Color del papel junto a una letra: la primera muestra alrededor que no sea tinta (una sola
+    // podría caer sobre la «/» del bajo; y sobre una marca de agua gris se respeta su gris).
+    const papel = (x, y, size) => {
+      let best = null, lum = -1;
+      for (const [dx, dy] of [[-3, -0.4], [-3, 0.25], [size * 0.3, -1.05], [size * 0.3, 0.3], [-size * 0.5, -0.4]]) {
+        const px = ctx.getImageData(Math.max(0, Math.round(x + dx)), Math.max(0, Math.round(y + dy * size)), 1, 1).data;
+        const l = px[0] + px[1] + px[2];
+        if (l > 480) return `rgb(${px[0]},${px[1]},${px[2]})`;
+        if (l > lum) { lum = l; best = px; }
+      }
+      return `rgb(${best[0]},${best[1]},${best[2]})`;
+    };
+    // Cambia una nota (la del acorde o la del bajo) en su lugar. «extra»: espacio de más que se
+    // hizo a la derecha (lo que seguía se corrió).
+    const pintar = (x0, y, size, font, pre, viejo, ra = 1, extra = 0) => {
+      ctx.font = `${size}px ${font}`;
+      const x = x0 + (pre ? ctx.measureText(pre).width * ra : 0);
+      const wOld = ctx.measureText(viejo).width * ra;
+      const neu = acorde(viejo, semi, nm);
+      ctx.fillStyle = papel(x, y, size);
+      // Hasta un poco debajo de la línea de las letras: el ♯ viejo baja más que la letra.
+      ctx.fillRect(x - 1, y - size * 0.82, wOld + 1.5, viejo.length > 1 ? size * 1.1 : size * 0.97);
+      const hueco = wOld + extra;
+      // La letra igual; el ♯ o ♭ un poco más chico y arriba (como en los charts), así cabe mejor.
+      ctx.fillStyle = '#000';
+      const letra = neu[0], signo = neu.slice(1);
+      ctx.font = `${size}px ${font}`;
+      const wL = ctx.measureText(letra).width;
+      // Si la letra del PDF no trae el ♯ o el ♭ (los PDF solo guardan las letras que usan), se dibuja.
+      const vector = signo && !tieneGlifo(font, signo);
+      const wNew = anchoNota(neu, size, font) * ra;
+      ctx.save();
+      // Más angosto: se pega a lo que sigue (m, 7, Δ…). Más ancho: se angosta un poco para caber.
+      ctx.translate(wNew < hueco ? x + (hueco - wNew) : x, y);
+      ctx.scale(wNew > hueco + size * 0.08 ? ra * (hueco + size * 0.08) / wNew : ra, 1);
+      ctx.font = `${size}px ${font}`;
+      ctx.fillText(letra, 0, 0);
+      if (signo && vector) { ctx.strokeStyle = '#000'; (signo === '♯' ? sostAcorde : bemolAcorde)(ctx, wL + size * 0.04, -size * 0.47, size); }
+      else if (signo) { ctx.font = `${size * 0.72}px ${font}`; ctx.fillText(signo, wL, -size * 0.28); }
+      ctx.restore();
+    };
+    // Dónde empieza el siguiente texto en el mismo renglón (para saber cuánto puede crecer un acorde).
+    // Si un renglón se recorrió para hacer lugar a la armadura, los textos se mueven igual.
+    const mapas = arms.mapas || [];
+    // (Se mira el centro de la letra, no su base: la base puede caer justo en el borde de la franja.)
+    const mapear = (x, y) => {
+      let f = 1;
+      for (const mp of mapas) if (y >= mp.top && y <= mp.bot && x >= mp.xS - 1) { x = mp.xS + mp.d + (x - mp.xS) * mp.f; f *= mp.f; }
+      return [x, f];
+    };
+    const lugar = (it) => { const m = Util.transform(vp.transform, it.transform); const [x, f] = mapear(m[4], m[5] - Math.hypot(m[2], m[3]) * 0.35); m[4] = x; return [m, f]; };
+    const pos = tc.items.map((it) => { const [m, f] = lugar(it); return { x: m[4], y: m[5], w: (it.width || 0) * vp.scale * f, vacio: !it.str || !it.str.trim(), acorde: Math.abs(it.height - hAc) <= 0.6 && RAIZ.test(it.str || '') && !!piezasAcorde(it.str) }; });
+    // El siguiente texto en el renglón («soloAcordes»: el siguiente acorde; lo de en medio, como el
+    // «m» o el «⁷» sueltos, es parte de este).
+    const siguienteX = (k, x, y, size, soloAcordes) => {
+      let best = Infinity;
+      for (let j = 0; j < pos.length; j++) { const q = pos[j]; if (j !== k && !q.vacio && (!soloAcordes || q.acorde) && Math.abs(q.y - y) < size * 0.9 && q.x > x + 1 && q.x < best) best = q.x; }
+      return best;
+    };
+    // Dónde termina de verdad lo dibujado del acorde (aunque el «m», el «⁷» o el «¹¹» sean otros
+    // textos del PDF): se sigue la tinta hacia la derecha hasta un hueco.
+    const finTinta = (x0, y, size, tope) => {
+      const W = ctx.canvas.width;
+      const y0 = Math.max(0, Math.round(y - size * 1.1)), y1 = Math.round(y + size * 0.08);
+      const xa = Math.max(0, Math.round(x0)), xb = Math.min(W - 1, Math.round(Math.min(tope, x0 + size * 3)));
+      if (xb <= xa) return x0;
+      const d = ctx.getImageData(xa, y0, xb - xa + 1, y1 - y0 + 1).data, w = xb - xa + 1;
+      let ult = -1, hueco = 0;
+      for (let c = 0; c < w; c++) {
+        let tinta = false;
+        for (let r = 0; r <= y1 - y0 && !tinta; r++) { const i = (r * w + c) * 4; if (d[i] + d[i + 1] + d[i + 2] < 420) tinta = true; }
+        if (tinta) { ult = c; hueco = 0; } else if (++hueco > size * 0.28) break;
+      }
+      return Math.max(x0, xa + ult + 1);
+    };
+    // Cambia una pieza («Cm7», «B♭/D»). Si la nota crece (C → C♯) y a la derecha hay lugar, lo que
+    // sigue (m7, Δ, /bajo…) se corre tal cual está dibujado; si no, la nota se angosta un poco.
+    const pieza = (k, m, size, font, str, p, ra, finX) => {
+      const pre = str.slice(0, p.i);
+      ctx.font = `${size}px ${font}`;
+      const x = m[4] + (pre ? ctx.measureText(pre).width * ra : 0);
+      const wOld = ctx.measureText(p.txt).width * ra;
+      const raiz = RAIZ.exec(p.txt)[0];
+      const wRaiz = ctx.measureText(raiz).width * ra;
+      nm = nombresEn(x, m[5]);
+      const crece = anchoNota(acorde(raiz, semi, nm), size, font) * ra - wRaiz;
+      let extra = 0, aire = 0;
+      if (crece > size * 0.06) {
+        // Un poquito de aire entre el ♯/♭ nuevo y lo que sigue (el «11» no se pega al signo).
+        aire = Math.round(size * 0.06);
+        // Fin de lo que se corre: el resto de la pieza, o si la pieza es solo la nota, lo pegado.
+        // Hasta dónde puede llegar: el siguiente acorde (en el mismo texto o en otro).
+        const tope = Math.min(finX, siguienteX(k, x + wOld - 1, m[5], size, true));
+        const fin = finTinta(x + wOld - 1, m[5], size, tope - size * 0.15);
+        const libre = Math.min(tope, siguienteX(k, fin - 1, m[5], size)) - x - size * 0.3;
+        extra = Math.max(0, Math.min(crece + aire, libre - (fin - x)));
+        if (extra >= 1 && fin - (x + wRaiz) > 1) {
+          const xr = Math.round(x + wRaiz), xe = Math.ceil(fin + 1);
+          const y0 = Math.max(0, Math.round(m[5] - size * 1.15)), h = Math.round(size * 1.5);
+          const bloque = ctx.getImageData(xr, y0, xe - xr, h);
+          ctx.fillStyle = papel(x, m[5], size);
+          ctx.fillRect(xr, y0, Math.round(extra) + 1, h);
+          ctx.putImageData(bloque, xr + Math.round(extra), y0);
+          extra = Math.round(extra);
+        }
+      }
+      pintar(m[4], m[5], size, font, pre, raiz, ra, Math.max(0, extra - Math.min(aire, extra / 3)));
+      const b = /\/([A-G](?:♯|#|♭|b)?)/.exec(p.txt);
+      if (b) pintar(m[4] + (wOld - wRaiz > 1 ? extra : 0), m[5], size, font, str.slice(0, p.i + b.index + 1), b[1], ra);
+    };
+    // Algunos programas (Finale) escriben el mismo texto dos veces encima para engrosarlo: se cambia
+    // una sola vez.
+    const vistos = new Set();
+    for (let k = 0; k < tc.items.length; k++) {
+      const it = tc.items[k];
+      if (!it.str || !it.str.trim()) continue;
+      const clave = it.str + '|' + Math.round(it.transform[4] * 2) + '|' + Math.round(it.transform[5] * 2);
+      if (vistos.has(clave)) continue;
+      vistos.add(clave);
+      const [m, fm] = lugar(it);
+      // Si al PDF le falta una letra, la de respaldo es del mismo estilo (con o sin serifas).
+      const fuente = `${it.fontName}, ${(tc.styles && tc.styles[it.fontName] && tc.styles[it.fontName].fontFamily) || 'sans-serif'}`;
+      const size = Math.hypot(m[2], m[3]);
+      if (!size) continue;
+      ctx.font = `${size}px ${fuente}`;
+      const wTodo = ctx.measureText(it.str).width;
+      const ra = (wTodo > 0 && it.width > 0 ? Math.min(1.5, Math.max(0.67, (it.width * vp.scale) / wTodo)) : 1) * fm;
+      // «Tonalidad Gm» del encabezado: también se cambia.
+      const t = TONALIDAD.exec(it.str);
+      if (t) { nm = names; pieza(k, m, size, fuente, it.str, { i: t[1].length, txt: t[2] + t[3] }, ra, Infinity); continue; }
+      if (Math.abs(it.height - hAc) > 0.6 || !RAIZ.test(it.str) || !enZona(m[5])) continue;
+      const ps = piezasAcorde(it.str);
+      if (!ps) continue;
+      for (let j = 0; j < ps.length; j++) {
+        const p = ps[j];
+        ctx.font = `${size}px ${fuente}`;
+        const finX = ps[j + 1] ? m[4] + ctx.measureText(it.str.slice(0, ps[j + 1].i)).width * ra : Infinity;
+        pieza(k, m, size, fuente, it.str, p, ra, finX);
+        n++;
+      }
+    }
+    return n;
+  }
+  // ¿En qué tono está el chart? (con su primera página ya dibujada en «ctx»)
+  // 1) Si lo dice («Tonalidad Gm», «Tono: E», «Key: B♭»), eso.
+  // 2) Si no, la armadura del primer renglón da la mayor o su menor relativa (1 ♯ = G o Em), y los
+  //    acordes deciden cuál: cuántas veces aparece cada una, y más el primero y el último.
+  // 3) Sin pentagrama (solo acordes), el acorde que más se repite (y el primero y el último).
+  // Devuelve { pc, minor, por: 'texto' | 'armadura' | 'acordes', texto? } o null.
+  function detectar(ctx, tc, vp, Util) {
+    const items = unirPedazos(tc.items);
+    for (const it of items) {
+      const t = /^\s*(?:Tonalidad|Tono|Key)\s*:?\s*([A-G])(♯|#|♭|b)?\s*(m|min|menor|minor)?\s*$/i.exec(it.str || '');
+      if (t) return { pc: (BASE[t[1].toUpperCase()] + alt(t[2]) + 12) % 12, minor: !!t[3], por: 'texto', texto: it.str.trim() };
+    }
+    const W = ctx.canvas.width, H = ctx.canvas.height;
+    const img = ctx.getImageData(0, 0, W, H);
+    const sts = pentagramas(img, W, H);
+    let n0 = null;
+    if (sts.length) {
+      const st = sts[0];
+      const ms = manchas(img, W, st, st.x0, st.x1);
+      const clave = ms.slice(0, 5).findIndex((m) => m.b - m.a >= st.sp * 4.5);
+      let i = clave >= 0 ? clave + 1 : 1;
+      if (clave >= 0) while (ms[i] && ms[i].x0 < ms[clave].x1 - 1) i++;
+      const arm = ms.length > 1 ? armaduraDesde(ms, i, st) : null;
+      n0 = arm ? (arm.tipo === 's' ? arm.n : -arm.n) : 0;
+    }
+    // Los acordes en orden de lectura (renglón por renglón, de izquierda a derecha).
+    const cuenta = {};
+    for (const it of items) if (RAIZ.test(it.str) && it.str.length <= 12) { const h = it.height.toFixed(1); cuenta[h] = (cuenta[h] || 0) + 1; }
+    const hAc = Number(Object.entries(cuenta).sort((a, b) => b[1] - a[1])[0]?.[0] || 0);
+    const enZona = (y) => !sts.length || sts.some((st) => y > st.ys[0] - st.sp * 5.5 && y < st.ys[0] + st.sp * 0.5);
+    const ac = [];
+    for (const it of items) {
+      if (!it.str || Math.abs(it.height - hAc) > 0.6 || !RAIZ.test(it.str)) continue;
+      const m = Util.transform(vp.transform, it.transform);
+      if (!enZona(m[5])) continue;
+      const ps = piezasAcorde(it.str);
+      if (!ps) continue;
+      for (const p of ps) {
+        const r = RAIZ.exec(p.txt);
+        const suf = p.txt.slice(r[0].length);
+        ac.push({ pc: (BASE[r[1]] + alt(r[2]) + 12) % 12, minor: /^(m(?!aj)|min|-)/.test(suf), y: Math.round(m[5] / 8), x: m[4] });
+      }
+    }
+    ac.sort((a, b) => a.y - b.y || a.x - b.x);
+    const peso = (i) => (i === 0 || i === ac.length - 1 ? 3 : 1);
+    if (n0 != null && SIG_INV[n0] != null) {
+      const mayor = SIG_INV[n0], menor = (mayor + 9) % 12;
+      let M = 0, mm = 0;
+      ac.forEach((c, i) => { if (c.pc === mayor && !c.minor) M += peso(i); if (c.pc === menor && c.minor) mm += peso(i); });
+      // (La mayor y su menor relativa tienen la misma armadura: las dos son posibles.)
+      return { ...(mm > M ? { pc: menor, minor: true } : { pc: mayor, minor: false }), por: 'armadura', mayor, n: n0 };
+    }
+    if (!ac.length) return null;
+    const puntos = new Map();
+    ac.forEach((c, i) => { const k = c.pc + (c.minor ? 'm' : ''); puntos.set(k, (puntos.get(k) || 0) + peso(i)); });
+    const [k] = [...puntos.entries()].sort((a, b) => b[1] - a[1])[0];
+    return { pc: parseInt(k, 10), minor: /m$/.test(k), por: 'acordes' };
+  }
+
+  // ¿El tono que puso el moderador va con lo que se detectó en el PDF?
+  // Por el texto: tiene que ser el mismo. Por la armadura: sirve la mayor o su menor relativa.
+  // Solo por acordes (sin pentagrama) no se puede saber seguro: no se reclama.
+  function coincide(key, d) {
+    if (!d) return true;
+    const k = tono(key);
+    if (!k) return false;
+    if (d.por === 'texto') return k.pc === d.pc && k.minor === d.minor;
+    if (d.por === 'armadura') return k.major === d.mayor;
+    return true;
+  }
+
+  // Una página: primero las armaduras (sobre la imagen limpia) y luego los acordes.
+  async function pagina(ctx, page, vp, semi, hacia, Util) {
+    if (!semi) return { acordes: 0, armaduras: [] };
+    const names = nombresPara(hacia);
+    const arms = armaduras(ctx, semi, names);
+    const tc = await page.getTextContent();
+    const n = acordesPdf(ctx, tc, vp, semi, names, Util, arms);
+    // Notas de melodía escritas (cabezas de nota de los programas de partituras): esas no se mueven,
+    // así que la app avisa.
+    let notas = 0;
+    for (const it of tc.items) for (const ch of it.str || '') if (ch >= '' && ch <= '') notas++;
+    return { acordes: n, armaduras: arms, notas };
+  }
+
+  return { tono, intervalo, nombresPara, acorde, chartTexto, pagina, detectar, coincide };
+})();
+
 // ---- PDF: se dibuja dentro de la app con pdf.js (se carga solo la primera vez que hace falta) ----
 const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168';
 let pdfjsP = null;
@@ -1885,7 +2603,49 @@ function loadPdfJs() {
   }
   return pdfjsP;
 }
-async function renderPdf(box, blob) {
+// ¿En qué tono está un PDF? Se mira su primera página (lo que dice «Tonalidad…», la armadura y los
+// acordes). Se recuerda por archivo para no repetirlo. null si no se puede saber.
+const tonoPdfMem = new Map();
+const tonoIgnorado = new Set(); // cantos donde el moderador dijo «Dejar así»
+function tonoDelPdf(blob, fileId) {
+  if (fileId && tonoPdfMem.has(fileId)) return tonoPdfMem.get(fileId);
+  const p = (async () => {
+    try {
+      const lib = await loadPdfJs();
+      const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
+      const page = await doc.getPage(1);
+      const base = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: 1224 / base.width });
+      const cv = document.createElement('canvas');
+      cv.width = Math.round(vp.width); cv.height = Math.round(vp.height);
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      await page.render({ canvasContext: ctx, viewport: vp }).promise;
+      const d = Transponer.detectar(ctx, await page.getTextContent(), vp, lib.Util);
+      doc.destroy();
+      return d;
+    } catch { return null; }
+  })();
+  if (fileId) tonoPdfMem.set(fileId, p);
+  return p;
+}
+const tonoNombre = (pc, minor) => KEYS[pc] + (minor ? 'm' : '');
+// Lo que se detectó, en palabras: el tono, y si fue por la armadura, también su relativo.
+function tonoOpciones(d) {
+  if (d.por !== 'armadura') return [tonoNombre(d.pc, d.minor)];
+  const mayor = tonoNombre(d.mayor, false), menor = tonoNombre((d.mayor + 9) % 12, true);
+  return d.minor ? [menor, mayor] : [mayor, menor];
+}
+const signosTxt = (n) => (!n ? 'sin ♯ ni ♭' : `${Math.abs(n)} ${n > 0 ? '♯' : '♭'}`);
+// El primer PDF del canto y su tono (para revisar el tono original que puso el moderador).
+async function tonoDelCanto(songId) {
+  const f = (await songFiles(songId).catch(() => [])).find((x) => x.type === 'application/pdf');
+  if (!f) return null;
+  const d = await fileData(songId, f).catch(() => null);
+  return d ? tonoDelPdf(d.blob, f.id) : null;
+}
+
+// tr = { semi, desde, hacia }: el PDF se ve en el tono de la lista (acordes y armadura).
+async function renderPdf(box, blob, tr) {
   const lib = await loadPdfJs();
   const doc = await lib.getDocument({ data: new Uint8Array(await blob.arrayBuffer()) }).promise;
   // Se dibuja con más detalle del necesario para que al hacer zoom se siga leyendo nítido.
@@ -1894,19 +2654,26 @@ async function renderPdf(box, blob) {
   for (let n = 1; n <= doc.numPages; n++) {
     const page = await doc.getPage(n);
     const base = page.getViewport({ scale: 1 });
-    const vp = page.getViewport({ scale: (w * dpr) / base.width });
+    // Al transponer se dibuja con un mínimo de detalle: con figuras muy chicas no se reconocen bien
+    // los ♯/♭ de la armadura (y además el chart se ve más nítido).
+    const vp = page.getViewport({ scale: Math.min(4, Math.max((w * dpr) / base.width, tr && tr.semi ? 2 : 0)) });
     const cv = document.createElement('canvas');
     cv.width = Math.round(vp.width);
     cv.height = Math.round(vp.height);
     cv.className = 'cr-page';
     box.appendChild(cv);
-    await page.render({ canvasContext: cv.getContext('2d'), viewport: vp }).promise;
+    const ctx = cv.getContext('2d', tr && tr.semi ? { willReadFrequently: true } : undefined);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    if (tr && tr.semi) {
+      try { const r = await Transponer.pagina(ctx, page, vp, tr.semi, tr.hacia, lib.Util); tr.acordes = (tr.acordes || 0) + r.acordes; tr.notas = (tr.notas || 0) + (r.notas || 0); }
+      catch (e) { console.warn('No se pudo transponer la página', e); }
+    }
   }
 }
 
 // Muestra un archivo (foto o PDF) en el lector. Si falla, explica por qué y da «Reintentar»
 // (que lo vuelve a bajar de la nube, sin la copia guardada).
-function showFile(fb, songId, f) {
+function showFile(fb, songId, f, tr) {
   fb.innerHTML = '<div class="cr-loading"><i></i></div>';
   const fail = (e) => {
     const incomplete = e && e.code === 'incompleto';
@@ -1917,15 +2684,21 @@ function showFile(fb, songId, f) {
     fb.querySelector('.cr-retry').onclick = async () => {
       fileMem.delete(f.id);
       try { const c = await caches.open(FILE_CACHE); await c.delete(new URL(`__archivo/${songId}/${f.id}`, location.href).href); } catch { /* sin copia */ }
-      showFile(fb, songId, f);
+      showFile(fb, songId, f, tr);
     };
   };
   fileData(songId, f).then(async (d) => {
     if (d.type === 'application/pdf') {
-      await renderPdf(fb, d.blob);
+      await renderPdf(fb, d.blob, tr);
       fb.querySelector('.cr-loading')?.remove();
+      // Un PDF sin acordes que se puedan leer (escaneado o con notas): se avisa en qué tono está.
+      if (tr && tr.semi && !tr.acordes) fb.insertAdjacentHTML('afterbegin', `<div class="cr-trnote">Este PDF no tiene acordes que se puedan cambiar: está en <b>${esc(tr.desde)}</b>.</div>`);
+      // Las notas de una melodía escrita no se mueven (solo acordes y armadura): se avisa.
+      else if (tr && tr.semi && tr.notas >= 12) fb.insertAdjacentHTML('afterbegin', `<div class="cr-trnote">Acordes y armadura en <b>${esc(tr.hacia)}</b>. Las notas de la melodía escrita siguen como en el original (<b>${esc(tr.desde)}</b>).</div>`);
       return;
     }
+    // Una foto no se puede transponer sola: se avisa en qué tono está.
+    if (tr && tr.semi) fb.insertAdjacentHTML('afterbegin', `<div class="cr-trnote">Esta foto está en <b>${esc(tr.desde)}</b> (la lista lo pide en ${esc(tr.hacia)}).</div>`);
     const img = new Image();
     img.className = 'cr-page';
     img.decoding = 'async';
@@ -1974,7 +2747,7 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
   try { lyrSize = Number(localStorage.getItem(LYR_SIZE_KEY)) || 20; } catch { /* sin almacenamiento */ }
   el.style.setProperty('--lyr', lyrSize + 'px');
   const chart = mode !== 'letra';
-  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div>${mode === 'letra' ? '<button class="cr-size" data-crsize="-2" aria-label="Letra más pequeña">A−</button><button class="cr-size" data-crsize="2" aria-label="Letra más grande">A+</button>' : '<button class="cr-inkbtn" data-crink aria-label="Marcar y escribir notas">' + ic('pencil') + '</button>'}<span class="cr-key"></span></div>
+  el.innerHTML = `<div class="cr-top"><button class="cr-back" data-crback>‹ Lista</button><div class="cr-title"><b></b><small></small></div>${mode === 'letra' ? '<button class="cr-size" data-crsize="-2" aria-label="Letra más pequeña">A−</button><button class="cr-size" data-crsize="2" aria-label="Letra más grande">A+</button>' : '<button class="cr-inkbtn" data-crink aria-label="Marcar y escribir notas">' + ic('pencil') + '</button>'}<div class="cr-trseg" role="group" aria-label="Tono del chart" hidden><button data-crorig="1"></button><button data-crorig="0"></button></div><span class="cr-key"></span></div>
     <div class="cr-stage"><button class="cr-zoomreset" data-crzoom1 hidden>${ic('refresh')} 100%</button></div>
     ${chart ? `<div class="cr-tools" hidden>
       ${Object.entries(INK_TOOLS).map(([k, t], n) => `<button type="button" data-tool="${k}" class="${n ? '' : 'on'}" aria-label="${k}"><i style="background:${t.c}${t.hl ? ';opacity:.6;height:10px;border-radius:3px' : ''}"></i></button>`).join('')}
@@ -1989,6 +2762,9 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
   const stage = el.querySelector('.cr-stage');
   const built = new Map();
   let cur = -1;
+  // false: cada chart se ve en el tono de la lista; true: tal como se subió.
+  let original = false;
+  const trDe = (id) => { const s = songById(id) || {}; const hacia = keys[id] || s.key || ''; const semi = original ? 0 : Transponer.intervalo(s.key, hacia); return semi ? { semi, desde: s.key, hacia } : null; };
   function build(i) {
     if (built.has(i) || i < 0 || i >= ids.length) return;
     const id = ids[i];
@@ -2015,9 +2791,10 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
         const fb = document.createElement('div');
         fb.className = 'cr-file';
         content.appendChild(fb);
-        showFile(fb, id, f);
+        showFile(fb, id, f, trDe(id));
       }
-      if (s.chart) content.insertAdjacentHTML('beforeend', `<pre class="cr-chart">${esc(s.chart)}</pre>`);
+      const tx = trDe(id);
+      if (s.chart) content.insertAdjacentHTML('beforeend', `<pre class="cr-chart">${esc(tx ? Transponer.chartTexto(s.chart, tx.semi, Transponer.nombresPara(tx.hacia)) : s.chart)}</pre>`);
       if (!files.length && !s.chart) {
         const secs = sectionsOf(s.text);
         content.innerHTML = `<div class="cr-msg">Este canto no tiene chart todavía. Se muestra la letra.</div>` +
@@ -2280,8 +3057,19 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
     el.querySelector('.cr-title b').textContent = s.title || 'Canto';
     el.querySelector('.cr-title small').textContent = `${i + 1} de ${ids.length}${s.author ? ' · ' + s.author : ''}`;
     const k = keys[ids[i]] || s.key || '';
-    el.querySelector('.cr-key').textContent = k;
-    el.querySelector('.cr-key').hidden = !k;
+    el.querySelector('.cr-key').textContent = original && s.key ? s.key : k;
+    // Si la lista lo pide en otro tono: selector «Original G | Lista A» en lugar de la nota sola.
+    const cambia = chart && s.key && k && Transponer.intervalo(s.key, k) !== 0;
+    el.querySelector('.cr-key').hidden = !k || cambia;
+    const seg = el.querySelector('.cr-trseg');
+    seg.hidden = !cambia;
+    if (cambia) {
+      const [bo, bl] = seg.querySelectorAll('button');
+      bo.innerHTML = `<small>Original</small>${esc(s.key)}`; bo.title = `Ver el chart como se subió (${s.key})`;
+      bl.innerHTML = `<small>Lista</small>${esc(k)}`; bl.title = `Ver el chart en el tono que pidieron (${k})`;
+      bo.classList.toggle('on', original); bl.classList.toggle('on', !original);
+      bo.setAttribute('aria-pressed', String(original)); bl.setAttribute('aria-pressed', String(!original));
+    }
     el.querySelectorAll('[data-crto]').forEach((b) => b.classList.toggle('on', Number(b.dataset.crto) === i));
     const chip = el.querySelector(`[data-crto="${i}"]`);
     if (chip) chip.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
@@ -2294,6 +3082,21 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
   el.addEventListener('click', (e) => {
     if (e.target.closest('[data-crback]')) { closeChartReader(); return; }
     if (e.target.closest('[data-crink]')) { setInking(!inking); return; }
+    const ob = e.target.closest('[data-crorig]');
+    if (ob) {
+      const quiere = ob.dataset.crorig === '1';
+      if (quiere === original) return;
+      original = quiere;
+      haptic(4);
+      // Se vuelven a armar los cantos ya preparados, en el tono que toca.
+      const c = cur;
+      built.forEach((b) => b.remove());
+      built.clear();
+      cur = -1;
+      show(c);
+      toast(original ? 'Charts tal como se subieron' : 'Charts en el tono de la lista');
+      return;
+    }
     if (e.target.closest('[data-crzoom1]')) { const b = built.get(cur); if (b) { const r = stage.getBoundingClientRect(); zoomAround(b, 1, r.left + r.width / 2, r.top + r.height / 2, true); } return; }
     const tl = e.target.closest('[data-tool]');
     if (tl) { tool = tl.dataset.tool; if (INK_TOOLS[tool]) lastColor = tool; syncInkUi(); haptic(4); if (tool === 'nota') toast('Toca donde quieres poner la nota'); return; }
@@ -3034,6 +3837,7 @@ function openSong(id, mode = 'letra') {
   let filesOff = null;
   const secs = sectionsOf(s.text);
   openSheet(`<div class="song-head"><span class="num">${esc(s.key || '♪')}</span><div class="grow"><b>${esc(s.title)}</b><small>${esc(s.author || '')}${s.status === 'sugerido' ? ' · sugerido' : ''}</small></div></div>
+    <div id="soTonoBox"></div>
     <div class="tabs" id="soMode"><button data-m="letra" class="${mode === 'letra' ? 'on' : ''}">Letra</button><button data-m="chart" class="${mode === 'chart' ? 'on' : ''}">Chart</button></div>
     <div id="soLetra"${mode === 'letra' ? '' : ' hidden'}>
       ${secs.length ? secs.map((x, i) => `<div class="sec-block" style="--i:${i}">${x.name ? secChip(x.name) : ''}
@@ -3058,11 +3862,40 @@ function openSong(id, mode = 'letra') {
       hide.hidden = true; show.hidden = false;
       show.classList.remove('swap'); void show.offsetWidth; show.classList.add('swap');
     };
+    // Moderador: si el PDF del canto está en otro tono que el «tono original», se avisa y se
+    // ofrece corregirlo (con un toque). «Dejar así» no vuelve a avisar en esta sesión.
+    const revisarTono = async (recien) => {
+      if (!isMod() || tonoIgnorado.has(id)) return;
+      const d = await tonoDelCanto(id);
+      const s2 = songById(id) || s;
+      if (!d || !$('soTonoBox') || Transponer.coincide(s2.key, d)) { if ($('soTonoBox')) $('soTonoBox').innerHTML = ''; return; }
+      const ops = tonoOpciones(d);
+      // Por el texto se sabe el tono exacto; por la armadura, la mayor o su menor relativa.
+      const que = d.por === 'texto' ? `El PDF está en <b>${esc(ops[0])}</b> (dice «${esc(d.texto)}»)`
+        : d.por === 'armadura' ? `El PDF tiene armadura de ${signosTxt(d.n)}: está en <b>${esc(ops[0])}</b> o <b>${esc(ops[1])}</b>`
+          : `El PDF parece estar en <b>${esc(ops[0])}</b>`;
+      $('soTonoBox').innerHTML = `<div class="tono-aviso${recien ? ' pop' : ''}">${ic('file')}<div>${que}${s2.key ? `, pero el tono original dice <b>${esc(s2.key)}</b>.` : '. Falta poner el tono original.'}
+        <div class="tono-btns">${ops.map((k) => `<button data-tono="${esc(k)}">${s2.key ? 'Cambiar a' : 'Poner'} ${esc(k)}</button>`).join('')}<button class="link" data-tono="">Dejar así</button></div></div></div>`;
+      haptic(8);
+    };
+    $('soTonoBox').onclick = async (e) => {
+      const b = e.target.closest('[data-tono]');
+      if (!b) return;
+      if (!b.dataset.tono) { tonoIgnorado.add(id); $('soTonoBox').innerHTML = ''; return; }
+      try {
+        await busy(b, api.updateSong(id, { key: b.dataset.tono }));
+        $('soTonoBox').innerHTML = '';
+        const num = document.querySelector('#sheet .song-head .num');
+        if (num) num.textContent = b.dataset.tono;
+        toast(`✓ Tono original: ${b.dataset.tono}`);
+      } catch (err) { toast(err.message || 'No se pudo cambiar'); }
+    };
     filesOff = api.watchFiles(id, (files) => {
       // La lista de archivos del lector se mantiene al día (al subir o borrar uno).
       filesOf.set(id, Promise.resolve(files.slice().sort((a, b) => (a.at || 0) - (b.at || 0))));
       prefetched.delete(id);
       prefetchSongs([id]);
+      revisarTono(false);
       if (!$('soFiles')) return;
       $('soFiles').innerHTML = files.map((f) => `<button class="file" data-file="${f.id}" data-type="${esc(f.type)}">${isAudio(f) ? ic('mic') : f.type === 'application/pdf' ? ic('file') : ic('image')}<span>${esc(f.name)}</span>${(isMod() || f.by === user.uid) ? `<i data-delfile="${f.id}">${ic('x')}</i>` : ''}</button>`).join('') || '<span class="small muted">Aún no hay charts ni partituras.</span>';
     });
@@ -3093,8 +3926,10 @@ function openSong(id, mode = 'letra') {
       try {
         toast('Subiendo…');
         const { base64, type, name } = await prepareFile(file);
-        await api.addFile(id, { name, type, size: base64.length, by: user.uid, byName: me.name }, base64);
+        const fid = await api.addFile(id, { name, type, size: base64.length, by: user.uid, byName: me.name }, base64);
         toast('Archivo agregado');
+        // Un PDF nuevo: se revisa si su tono va con el tono original del canto.
+        if (type === 'application/pdf' && fid) { tonoPdfMem.set(fid, tonoDelPdf(file)); revisarTono(true); }
       } catch (err) { toast(err.message || 'No se pudo subir'); }
     };
   });
@@ -3268,6 +4103,15 @@ function editSong(id, opts = {}) {
       const data = { title, author: $('edAuthor').value.trim(), youtube, key, category };
       // Una parte escrita sin líneas en blanco se divide en diapositivas (igual que en Letras).
       if (full) { data.text = textOf(secs.map((x) => ({ ...x, body: splitSlides(x.body, splitN()) }))); data.chart = $('edChart').value.replace(/\r/g, ''); }
+      // Si se cambió el tono original y el canto ya tiene su PDF: que vayan de acuerdo.
+      if (id && full && key && key !== (s.key || '')) {
+        const d = await busy($('edSave'), tonoDelCanto(id));
+        if (d && !Transponer.coincide(key, d)) {
+          const ops = tonoOpciones(d);
+          const que = d.por === 'armadura' ? `${ops[0]} o ${ops[1]} (su armadura tiene ${signosTxt(d.n)})` : ops[0];
+          if (!confirm(`El PDF de este canto está en ${que}, pero elegiste ${key}.\n\nSi el tono original no es el del PDF, al cambiar de tono en las listas el chart sale mal.\n\n¿Guardar ${key} de todos modos?`)) { $('edErr').textContent = `El PDF está en ${ops.join(' o ')}: elige ese tono.`; return; }
+        }
+      }
       try {
         if (id) {
           await busy($('edSave'), api.updateSong(id, data));
@@ -3653,6 +4497,8 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
     return;
   }
   $('demo').hidden = !api.demo;
+  // Solo en la demostración en esta PC: acceso para las pruebas automáticas (no existe en la app real).
+  if (api.demo && /^(localhost|127\.0\.0\.1)$/.test(location.hostname)) window.__prueba = { api, openChartReader, songById, Transponer, openSong, editSong };
   document.body.classList.toggle('demo', api.demo);
   offCleanup();
   renderNetBanner();
