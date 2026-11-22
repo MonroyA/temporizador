@@ -454,6 +454,11 @@
   .gp-modes button:active, .gp-open button:active { transform: scale(.96); background: rgba(139,227,214,.22); }
   .gp-modes svg, .gp-open svg, .gp-sec .lab svg, .gp-note svg, .gp-t small svg { width: 15px; height: 15px; flex: none; }
   .gp-open button { flex: 1; justify-content: center; height: 42px; }
+  /* «Descargar» la lista para verla sin internet */
+  .gp-modes .gp-dl { border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.06); color: rgba(255,255,255,.85); transition: background .3s, border-color .3s, color .3s, transform .2s; }
+  .gp-modes .gp-dl.on { border-color: rgba(23,178,106,.55); background: rgba(23,178,106,.16); color: #9ff0c6; }
+  .gp-modes .gp-dl.busy { border-color: rgba(139,227,214,.45); color: #bff3ea; pointer-events: none; }
+  .gp-modes .gp-dl.busy svg { animation: gpPulse 1s ease-in-out infinite; }
   .gp-note { display: flex; gap: 10px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,.05); font-size: 13px; line-height: 1.45; color: rgba(255,255,255,.8); }
   .gp-note svg { margin-top: 2px; color: #8be3d6; }
   #gpList { display: flex; flex-direction: column; gap: 8px; }
