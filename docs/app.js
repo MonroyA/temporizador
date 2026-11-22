@@ -1435,11 +1435,10 @@ function guestPanelIn(form) {
   let commentsOff = null;
   let comments = [];
   const subs = [];
-  const visible = () => services.filter(sent);
-  const pickDefault = () => {
-    const up = visible().filter((s) => s.date >= today());
-    return (up[0] || visible()[visible().length - 1] || {}).date || '';
-  };
+  // Solo las listas enviadas de hoy en adelante (nunca las que ya pasaron). Sin internet, solo las
+  // que se descargaron en este teléfono.
+  const visible = () => services.filter((s) => sent(s) && s.date >= today() && (navigator.onLine || offPack(s.date)));
+  const pickDefault = () => (visible()[0] || {}).date || '';
   const itemSong = (it) => (it.songId && songById(it.songId)) || {};
   const val = (it, k) => it[k] || itemSong(it)[k] || '';
   const refTypeOf = (it) => it.refType || (it.audioId ? 'audio' : 'youtube');
@@ -1449,7 +1448,7 @@ function guestPanelIn(form) {
     if (!box) return;
     if (!servicesLoaded) { box.innerHTML = '<span class="gp-date skel"></span>'.repeat(3); return; }
     if (guestError) { box.innerHTML = ''; return; }
-    const list = visible().filter((s) => s.date >= today() || s.date === date);
+    const list = visible();
     box.innerHTML = list.map((s) => {
       const d = parseKey(s.date);
       return `<button type="button" class="gp-date${s.date === date ? ' on' : ''}" data-gpdate="${s.date}"><b>${d.getDate()}</b><small>${MONTHS[d.getMonth()]}</small><i>${DAYS[d.getDay()].slice(0, 3)}</i></button>`;
@@ -1459,11 +1458,19 @@ function guestPanelIn(form) {
     const box = $('gpSvc');
     if (!box) return;
     if (guestError) { box.innerHTML = '<div class="gp-empty">Por ahora no se pueden ver las listas sin cuenta.<br>Pídele a un moderador que lo active.</div>'; return; }
-    if (servicesLoaded && !date) { box.innerHTML = '<div class="gp-empty">Todavía no hay listas enviadas para las próximas fechas.</div>'; return; }
+    if (servicesLoaded && !date) {
+      box.innerHTML = `<div class="gp-empty">${navigator.onLine ? 'Todavía no hay listas enviadas para hoy ni para las próximas fechas.' : 'Sin internet y sin listas descargadas.<br>Con internet, abre una lista y toca «Descargar».'}</div>`;
+      return;
+    }
     const s = services.find((x) => x.date === date);
     if (!s) { box.innerHTML = ''; return; }
+    // «Descargar»: la lista completa queda en el teléfono (charts, PDF, audios, letra y comentarios)
+    // para verla sin internet. Se borra sola cuando pasa la fecha.
+    const job = offJobs.get(date);
+    const got = !!offPack(date);
+    const dl = `<button type="button" class="gp-dl${got ? ' on' : ''}${job ? ' busy' : ''}" data-gpdl aria-label="${got ? 'Descargada: tocar para quitarla' : 'Descargar para ver sin internet'}">${got ? ic('check') : ic('download')}<span>${job ? (job.total ? Math.round((job.done / job.total) * 100) + '%' : 'Bajando…') : got ? 'Descargada' : 'Descargar'}</span></button>`;
     box.innerHTML = `<div class="gp-svc"><div class="gp-svc-t"><b>${esc(s.title || 'Servicio')}</b><small>${esc(niceDate(s.date))}${s.leaderName ? ' · ministra ' + esc(s.leaderName) : ''}</small></div>
-      ${items && items.length ? `<div class="gp-modes"><button type="button" data-gpread="chart">${ic('score')} Chart</button><button type="button" data-gpread="letra">${ic('type')} Letra</button></div>` : ''}</div>
+      ${items && items.length ? `<div class="gp-modes"><button type="button" data-gpread="chart">${ic('score')} Chart</button><button type="button" data-gpread="letra">${ic('type')} Letra</button>${dl}</div>` : ''}</div>
       ${s.note ? `<div class="gp-note">${ic('note')}<span>${esc(s.note)}</span></div>` : ''}`;
   }
   function renderList() {
@@ -1583,6 +1590,8 @@ function guestPanelIn(form) {
     else { items = null; renderSvc(); renderList(); }
     if (!date) { swapping = false; items = null; morph(() => { renderSvc(); renderList(); }); return; }
     itemsOff = api.watchItems(date, (list) => {
+      // Si la lista llegó igual que antes, no se redibuja (así no se corta un video que se está viendo).
+      if (!swapping && items && JSON.stringify(list) === JSON.stringify(items)) return;
       const first = items === null || swapping;
       const wasSwap = swapping;
       swapping = false;
@@ -1605,7 +1614,7 @@ function guestPanelIn(form) {
   }
   const refresh = () => {
     if (!on) return;
-    if (!date || !services.some((s) => s.date === date)) { const d = pickDefault(); if (d !== date || !itemsOff) { setDate(d); return; } }
+    if (!date || !visible().some((s) => s.date === date)) { const d = pickDefault(); if (d !== date || !itemsOff) { setDate(d); return; } }
     renderDates(); renderSvc();
   };
   form.addEventListener('click', (e) => {
@@ -1614,6 +1623,7 @@ function guestPanelIn(form) {
     if (d) { haptic(5); setDate(d.dataset.gpdate); return; }
     const s = e.target.closest('[data-gpsel]');
     if (s) { select(s.dataset.gpsel); return; }
+    if (e.target.closest('[data-gpdl]')) { haptic(6); const d = date; offToggleDate(d, () => { if (on && date === d) renderSvc(); }); return; }
     // Video de YouTube: primero su imagen; al tocarla se carga y empieza.
     const y = e.target.closest('[data-gpyt]');
     if (y) {
@@ -1646,7 +1656,20 @@ function guestPanelIn(form) {
       if (on) return;
       on = true;
       guestWatch();
-      subs.push(onServices(refresh), onSongs(() => { if (on) { renderList(); } }));
+      // Los cantos se actualizan cada tanto: solo se redibuja si cambió algo de los cantos de ESTA
+      // lista (si no, se cortaría el video que se está viendo).
+      let songSig = '';
+      subs.push(onServices(refresh), onSongs(() => {
+        if (!on || !items) return;
+        const sig = JSON.stringify(items.map((it) => { const s = songById(it.songId) || {}; return [s.title, s.author, s.key, s.youtube, s.category, (s.chart || '').length]; }));
+        if (sig === songSig) return;
+        songSig = sig;
+        renderList();
+      }));
+      // Sin internet / de vuelta: cambian las listas que se pueden ver (solo las descargadas).
+      const net = () => { if (on) { refresh(); renderDates(); renderSvc(); } };
+      addEventListener('online', net); addEventListener('offline', net);
+      subs.push(() => { removeEventListener('online', net); removeEventListener('offline', net); });
       refresh();
       renderDates(); renderSvc(); renderList();
     },
@@ -1847,7 +1870,9 @@ function viewHome() {
     // Sin internet: solo las listas descargadas (modo offline). Con internet, todas.
     const off = !navigator.onLine;
     const up = services.filter((s) => s.date >= today() && (!off || offPack(s.date)));
-    const past = off ? [] : services.filter((s) => s.date < today()).reverse();
+    // Las que ya pasaron se quedan abajo solo una semana.
+    const weekAgo = (() => { const d = new Date(); d.setDate(d.getDate() - 7); return keyOf(d); })();
+    const past = off ? [] : services.filter((s) => s.date < today() && s.date >= weekAgo).reverse();
     const filt = (s) => !q || (niceDate(s.date) + ' ' + (s.title || '') + ' ' + (s.leaderName || '')).toLowerCase().includes(q);
     $('dates').innerHTML = up.filter(filt).map((s, i) => {
       const d = parseKey(s.date);
