@@ -166,6 +166,72 @@ function demoBackend() {
     };
   }
   db.notifs = db.notifs || {};
+  // Un canto completo de ejemplo (todo lo que puede tener una alabanza), para ver cómo se ve.
+  // La letra es de ejemplo (no es la del canto real).
+  if (db.seedFull !== 2) {
+    const sun = Object.keys(db.items).sort().find((d) => d >= today()) || Object.keys(db.items)[0];
+    db.songs.s1 = { ...(db.songs.s1 || {}), title: 'Grande eres Jehová', author: 'Ministerios Ebenezer', key: 'G', category: 'alabanza',
+      youtube: 'https://www.youtube.com/watch?v=zkgZyRDI5aU', status: 'agregado', by: 'demo', byName: 'Tú (demo)', at: Date.now(), seed: true,
+      text: '[Intro]\n(Piano solo, 4 compases)\n\n[Verso 1]\nTexto de ejemplo del primer verso\ncon una segunda línea\n\n[Pre-coro]\nAquí sube la intensidad\nantes de llegar al coro\n\n[Coro]\nGrande eres Jehová\nsobre toda la tierra\n\n[Verso 2]\nOtro verso de ejemplo\npara ver cómo se ven las partes\n\n[Puente]\nUna parte que se repite\ny cambia la dinámica\n\n[Final]\nSe termina suave, solo voz',
+      chart: '[Intro]\n| G  | D  | Em | C  |\n\n[Verso 1]\nG          D\nTexto de ejemplo del primer verso\nEm        C\ncon una segunda línea\n\n[Coro]\nG          D\nGrande eres Jehová\nEm        C\nsobre toda la tierra\n\n[Puente]\nC   D   Em   G/B\nC   D   G' };
+    if (sun && db.items[sun]) {
+      const it = Object.entries(db.items[sun]).find(([, x]) => x.songId === 's1');
+      if (it) Object.assign(db.items[sun][it[0]], { key: 'A', youtube: '', refType: 'youtube', notes: 'Empieza solo el piano 4 compases.\nLa batería entra en el segundo coro.\nEl puente se repite 2 veces y bajamos para el final.' });
+      if (it) db.comments[`${sun}/${it[0]}`] = {
+        c1: { text: 'La batería entra en el segundo coro.', by: 'm2', byName: 'María', at: Date.now() - 3 * 3600e3 },
+        c2: { text: '¿Lo subimos a A? Así le queda mejor a la voz.', by: 'm3', byName: 'Pedro', at: Date.now() - 2 * 3600e3 },
+        c3: { text: 'Sí, queda en A. Ya cambié el tono de la lista.', by: 'demo', byName: 'Tú (demo)', at: Date.now() - 3600e3 },
+      };
+    }
+    db.seedFull = 2;
+    try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* sin espacio */ }
+    // Chart en PDF y audio de referencia del equipo (se agregan aparte: tardan un poco en prepararse).
+    setTimeout(async () => {
+      db.files.s1 = db.files.s1 || {};
+      try {
+        const r = await fetch('prueba-c1.pdf');
+        if (r.ok) {
+          const b = new Uint8Array(await r.arrayBuffer());
+          let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+          db.files.s1.f1 = { name: 'Grande eres Jehová (chart).pdf', type: 'application/pdf', size: btoa(s).length, by: 'demo', byName: 'Tú (demo)', data: btoa(s), at: Date.now() - 5000 };
+        }
+      } catch { /* sin PDF de prueba */ }
+      // 4 s de un acorde suave (G) como «audio nuestro» de ejemplo.
+      const rate = 8000, n = rate * 4, buf = new DataView(new ArrayBuffer(44 + n * 2));
+      const w = (o, t) => [...t].forEach((c, i) => buf.setUint8(o + i, c.charCodeAt(0)));
+      w(0, 'RIFF'); buf.setUint32(4, 36 + n * 2, true); w(8, 'WAVEfmt '); buf.setUint32(16, 16, true); buf.setUint16(20, 1, true); buf.setUint16(22, 1, true);
+      buf.setUint32(24, rate, true); buf.setUint32(28, rate * 2, true); buf.setUint16(32, 2, true); buf.setUint16(34, 16, true); w(36, 'data'); buf.setUint32(40, n * 2, true);
+      for (let i = 0; i < n; i++) { const t = i / rate; const env = Math.min(1, t * 4) * Math.max(0, 1 - t / 4); buf.setInt16(44 + i * 2, Math.round(9000 * env * (Math.sin(2 * Math.PI * 196 * t) + Math.sin(2 * Math.PI * 246.9 * t) + Math.sin(2 * Math.PI * 293.7 * t)) / 3), true); }
+      const bytes = new Uint8Array(buf.buffer);
+      let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+      db.files.s1.a1 = { name: 'Ensayo del jueves.wav', type: 'audio/wav', size: btoa(s).length, by: 'm2', byName: 'María', kind: 'audio', data: btoa(s), at: Date.now() };
+      const sun2 = Object.keys(db.items).sort().find((d) => d >= today()) || Object.keys(db.items)[0];
+      const it2 = sun2 && Object.entries(db.items[sun2] || {}).find(([, x]) => x.songId === 's1');
+      if (it2) db.items[sun2][it2[0]].audioId = 'a1';
+      save();
+    }, 300);
+  }
+  // Más fechas enviadas (para cambiar entre listas en la demostración).
+  if (!db.seedDates) {
+    const base = parseKey(Object.keys(db.services).sort().find((d) => d >= today()) || nextSunday());
+    const plus = (n) => { const d = new Date(base); d.setDate(d.getDate() + n); return keyOf(d); };
+    const d3 = plus(3), d7 = plus(7);
+    db.songs.s4 = db.songs.s4 || { title: 'Santo, Santo, Santo', author: 'Tradicional', key: 'D', category: 'adoracion', youtube: '', text: '[Verso 1]\nTexto de ejemplo para adoración\nlento y suave\n\n[Coro]\nSanto, santo, santo', chart: '[Verso 1]\nD        G\nTexto de ejemplo para adoración\nA        D\nlento y suave', status: 'agregado', by: 'demo', byName: 'Tú (demo)', at: Date.now(), seed: true };
+    db.services[d3] = { date: d3, title: 'Culto de oración', note: 'Solo piano y voz, todo tranquilo.', status: 'enviada', by: 'm2', byName: 'María', leader: 'm2', leaderName: 'María' };
+    db.items[d3] = {
+      j1: { songId: 's4', order: 1, key: 'D', notes: 'Muy suave, sin batería.', by: 'm2', byName: 'María', at: Date.now() },
+      j2: { songId: 's2', order: 2, key: 'C', notes: '', by: 'm2', byName: 'María', at: Date.now() },
+    };
+    db.services[d7] = { date: d7, title: 'Santa Cena', note: 'Al final, mientras se reparte el pan, «Santo, Santo, Santo».', status: 'enviada', by: 'demo', byName: 'Tú (demo)', leader: 'demo', leaderName: 'Pedro' };
+    db.items[d7] = {
+      k1: { songId: 's2', order: 1, key: 'D', notes: 'Entrada con todo el equipo.', by: 'demo', byName: 'Tú (demo)', at: Date.now() },
+      k2: { songId: 's1', order: 2, key: 'G', notes: 'Una sola vez el puente.', by: 'demo', byName: 'Tú (demo)', at: Date.now() },
+      k3: { songId: 's4', order: 3, key: 'E', notes: 'Mientras se reparte el pan.', by: 'demo', byName: 'Tú (demo)', at: Date.now() },
+    };
+    db.comments[`${d7}/k3`] = { c1: { text: 'Lo subí a E para el coro de damas.', by: 'm2', byName: 'María', at: Date.now() - 1800e3 } };
+    db.seedDates = true;
+    try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* sin espacio */ }
+  }
   const subs = new Set();
   // Un oyente de una pantalla vieja que falle no debe frenar a los demás.
   const save = () => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { toast('El teléfono no tiene espacio para guardar más en la demostración'); } subs.forEach((f) => { try { f(); } catch (e) { console.warn(e); } }); };
@@ -364,9 +430,9 @@ async function firebaseBackend() {
     updateMember: (id, patch) => F.updateDoc(D('members', id), patch),
     removeMember: (id) => F.deleteDoc(D('members', id)),
     watchMembers: (cb) => F.onSnapshot(C('members'), (s) => cb(snapList(s))),
-    watchServices(cb) {
+    watchServices(cb, onErr) {
       const since = keyOf(new Date(Date.now() - 14 * 864e5));
-      return F.onSnapshot(F.query(C('services'), F.where('date', '>=', since), F.orderBy('date')), (s) => cb(snapList(s)));
+      return F.onSnapshot(F.query(C('services'), F.where('date', '>=', since), F.orderBy('date')), (s) => cb(snapList(s)), (e) => { console.warn(e); if (onErr) onErr(e); });
     },
     saveService: (date, data) => F.setDoc(D('services', date), { ...data, date, updatedAt: Date.now(), srvAt: F.serverTimestamp() }, { merge: true }),
     async deleteService(date) {
@@ -374,7 +440,7 @@ async function firebaseBackend() {
       await Promise.all(items.docs.map((d) => F.deleteDoc(d.ref)));
       await F.deleteDoc(D('services', date));
     },
-    watchItems: (date, cb) => F.onSnapshot(F.query(C('services', date, 'items'), F.orderBy('order')), (s) => cb(snapList(s))),
+    watchItems: (date, cb, onErr) => F.onSnapshot(F.query(C('services', date, 'items'), F.orderBy('order')), (s) => cb(snapList(s)), (e) => { console.warn(e); if (onErr) onErr(e); }),
     addItem: async (date, item) => { const r = await F.addDoc(C('services', date, 'items'), { ...item, at: Date.now() }); touch(date); return r.id; },
     updateItem: async (date, id, patch) => { await F.updateDoc(D('services', date, 'items', id), patch); touch(date); },
     deleteItem: async (date, id) => { await F.deleteDoc(D('services', date, 'items', id)); touch(date); },
@@ -407,7 +473,7 @@ async function firebaseBackend() {
     deleteComment: (date, item, id) => F.deleteDoc(D('services', date, 'items', item, 'comments', id)),
     // srvAt (hora del servidor) le dice al Temporizador qué cantos cambiaron. Un canto borrado
     // queda como «borrado» para que también se borre en todas las computadoras.
-    watchSongs: (cb) => F.onSnapshot(F.query(C('songs'), F.orderBy('title')), (s) => cb(snapList(s).filter((x) => x.status !== 'borrado'))),
+    watchSongs: (cb, onErr) => F.onSnapshot(F.query(C('songs'), F.orderBy('title')), (s) => cb(snapList(s).filter((x) => x.status !== 'borrado')), (e) => { console.warn(e); if (onErr) onErr(e); }),
     addSong: async (song) => (await F.addDoc(C('songs'), { ...song, at: Date.now(), updatedAt: Date.now(), srvAt: F.serverTimestamp() })).id,
     updateSong: (id, patch) => F.updateDoc(D('songs', id), { ...patch, updatedAt: Date.now(), srvAt: F.serverTimestamp() }),
     deleteSong: (id) => F.updateDoc(D('songs', id), { status: 'borrado', updatedAt: Date.now(), srvAt: F.serverTimestamp() }),
@@ -1322,7 +1388,280 @@ const LG_ICONS = {
   eyeOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.6A9.7 9.7 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-3.2 3.9M6.2 6.9C3.9 8.6 2.5 12 2.5 12S6 18.5 12 18.5a9 9 0 0 0 4.1-1"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>',
   arrow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.5 4.5 4.5L19 7.5"/></svg>',
+  list: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1.2"/><circle cx="4.5" cy="12" r="1.2"/><circle cx="4.5" cy="18" r="1.2"/></svg>',
 };
+const LOGIN_MODE_KEY = 'listas-modo-entrar';
+
+// ======================================================================================
+// Participantes: sin cuenta. En la pantalla de entrar, «Participante» amplía la tarjeta y ahí
+// mismo se ve la lista: cada canto con su chart, letra, indicaciones, referencia y comentarios.
+// ======================================================================================
+let guestOff = [];
+let guestError = false;
+function guestWatch() {
+  if (guestOff.length) return;
+  guestError = false;
+  const tell = () => serviceListeners.forEach((f) => { try { f(); } catch (e) { console.warn(e); } });
+  guestOff.push(api.watchServices((list) => { services = list; servicesLoaded = true; tell(); }, () => { servicesLoaded = true; guestError = true; tell(); }));
+  guestOff.push(api.watchSongs((list) => { songs = list; songListeners.forEach((f) => f()); }, () => {}));
+}
+function stopGuest() {
+  guestOff.forEach((f) => { try { f(); } catch { /* ya cerrado */ } });
+  guestOff = [];
+  if (!user) { services = []; songs = []; servicesLoaded = false; }
+}
+// Abre y cierra un bloque deslizándolo (la altura crece o se encoge con suavidad).
+// Sutil: la altura crece pareja (sin rebote) y el contenido aparece con un fundido que va un poco
+// detrás, así no se ve «aparecer de golpe».
+function gpSlide(el, open, done) {
+  if (reducedMotion() || !el.animate) { if (done) done(); return; }
+  const h = el.scrollHeight;
+  el.style.overflow = 'hidden';
+  const ms = open ? 460 : 340;
+  const ease = open ? 'cubic-bezier(.33,.0,.2,1)' : 'cubic-bezier(.4,0,.6,1)';
+  const a = el.animate(open ? [{ height: '0px' }, { height: h + 'px' }] : [{ height: h + 'px' }, { height: '0px' }], { duration: ms, easing: ease });
+  el.animate(open ? [{ opacity: 0 }, { opacity: 0, offset: 0.25 }, { opacity: 1 }] : [{ opacity: 1 }, { opacity: 0, offset: 0.6 }, { opacity: 0 }], { duration: ms, easing: 'linear' });
+  let ended = false;
+  const end = () => { if (ended) return; ended = true; el.style.overflow = ''; a.cancel(); if (done) done(); };
+  a.onfinish = end;
+  setTimeout(end, ms + 250);
+}
+function guestPanelIn(form) {
+  let on = false;
+  let date = '';
+  let items = null;
+  let sel = null;
+  let itemsOff = null;
+  let commentsOff = null;
+  let comments = [];
+  const subs = [];
+  const visible = () => services.filter(sent);
+  const pickDefault = () => {
+    const up = visible().filter((s) => s.date >= today());
+    return (up[0] || visible()[visible().length - 1] || {}).date || '';
+  };
+  const itemSong = (it) => (it.songId && songById(it.songId)) || {};
+  const val = (it, k) => it[k] || itemSong(it)[k] || '';
+  const refTypeOf = (it) => it.refType || (it.audioId ? 'audio' : 'youtube');
+
+  function renderDates() {
+    const box = $('gpDates');
+    if (!box) return;
+    if (!servicesLoaded) { box.innerHTML = '<span class="gp-date skel"></span>'.repeat(3); return; }
+    if (guestError) { box.innerHTML = ''; return; }
+    const list = visible().filter((s) => s.date >= today() || s.date === date);
+    box.innerHTML = list.map((s) => {
+      const d = parseKey(s.date);
+      return `<button type="button" class="gp-date${s.date === date ? ' on' : ''}" data-gpdate="${s.date}"><b>${d.getDate()}</b><small>${MONTHS[d.getMonth()]}</small><i>${DAYS[d.getDay()].slice(0, 3)}</i></button>`;
+    }).join('');
+  }
+  function renderSvc() {
+    const box = $('gpSvc');
+    if (!box) return;
+    if (guestError) { box.innerHTML = '<div class="gp-empty">Por ahora no se pueden ver las listas sin cuenta.<br>Pídele a un moderador que lo active.</div>'; return; }
+    if (servicesLoaded && !date) { box.innerHTML = '<div class="gp-empty">Todavía no hay listas enviadas para las próximas fechas.</div>'; return; }
+    const s = services.find((x) => x.date === date);
+    if (!s) { box.innerHTML = ''; return; }
+    box.innerHTML = `<div class="gp-svc"><div class="gp-svc-t"><b>${esc(s.title || 'Servicio')}</b><small>${esc(niceDate(s.date))}${s.leaderName ? ' · ministra ' + esc(s.leaderName) : ''}</small></div>
+      ${items && items.length ? `<div class="gp-modes"><button type="button" data-gpread="chart">${ic('score')} Chart</button><button type="button" data-gpread="letra">${ic('type')} Letra</button></div>` : ''}</div>
+      ${s.note ? `<div class="gp-note">${ic('note')}<span>${esc(s.note)}</span></div>` : ''}`;
+  }
+  function renderList() {
+    const box = $('gpList');
+    if (!box) return;
+    if (!date || guestError) { box.innerHTML = ''; return; }
+    if (!items) { box.innerHTML = '<div class="gp-item skel"><span></span></div>'.repeat(4); return; }
+    if (!items.length) { box.innerHTML = '<div class="gp-empty">Esta lista todavía no tiene cantos.</div>'; return; }
+    box.innerHTML = items.map((it, i) => {
+      const yt = ytId(val(it, 'youtube'));
+      const hasRef = (refTypeOf(it) === 'audio' && it.audioId) || yt;
+      return `<div class="gp-item${it.id === sel ? ' open' : ''}" data-gpitem="${it.id}" style="--i:${i}">
+        <button type="button" class="gp-head" data-gpsel="${it.id}"><span class="gp-num">${i + 1}</span><span class="gp-t"><b>${esc(val(it, 'title') || 'Canto')}</b><small>${esc(val(it, 'author') || '')}${it.notes ? ' · ' + ic('note') + ' indicaciones' : ''}${hasRef ? ' · ' + ic('play') + ' referencia' : ''}</small></span><span class="gp-key">${esc(val(it, 'key') || '—')}</span><span class="gp-chev">›</span></button>
+      </div>`;
+    }).join('');
+    if (sel) { const row = box.querySelector(`[data-gpitem="${sel}"]`); if (row) { row.appendChild(detail(items.find((x) => x.id === sel))); } else sel = null; }
+  }
+  // Lo de cada canto: chart y letra (lector a pantalla completa), indicaciones, referencia y comentarios.
+  // Todo lo de una alabanza: tipo y tono, chart y letra (lector a pantalla completa), indicaciones,
+  // la letra por partes, los charts y archivos, la referencia (video y/o audio) y los comentarios.
+  function detail(it) {
+    const el = Object.assign(document.createElement('div'), { className: 'gp-body', id: 'gpDetail' });
+    const song = itemSong(it);
+    const k = val(it, 'key');
+    const orig = song.key && song.key !== k ? song.key : '';
+    const yt = ytId(val(it, 'youtube'));
+    const audio = !!it.audioId;
+    const first = refTypeOf(it) === 'audio' && audio ? 'audio' : yt ? 'youtube' : audio ? 'audio' : '';
+    const ytCard = !yt ? '' : navigator.onLine
+      ? `<button type="button" class="gp-yt" data-gpyt="${yt}" aria-label="Ver el video"><img src="https://i.ytimg.com/vi/${yt}/hqdefault.jpg" alt="" loading="lazy"><span class="gp-play">${ic('play')}</span><span class="gp-yt-l">YouTube</span></button>`
+      : '<div class="small muted">El video necesita internet.</div>';
+    el.innerHTML = `
+      <div class="gp-meta">
+        <span class="gp-chip">${catOf(song) === 'adoracion' ? ic('feather') + ' Adoración' : ic('sparkles') + ' Alabanza'}</span>
+        <span class="gp-chip key">Tono <b>${esc(k || '—')}</b>${orig ? `<small>original ${esc(orig)}</small>` : ''}</span>
+        ${it.byName ? `<span class="gp-chip soft">Lo agregó ${esc(it.byName)}</span>` : ''}
+      </div>
+      <div class="gp-open"><button type="button" data-gpread="chart" data-gpfrom="${it.id}">${ic('score')} Chart</button><button type="button" data-gpread="letra" data-gpfrom="${it.id}">${ic('type')} Letra</button></div>
+      <div class="gp-sec"><div class="lab">${ic('note')} Indicaciones</div><div class="gp-txt">${it.notes ? esc(it.notes) : '<span class="small muted">Sin indicaciones.</span>'}</div></div>
+      <div class="gp-sec"><div class="lab">${ic('score')} Charts y partituras</div><div class="gp-files" id="gpFiles">${song.chart ? `<button type="button" class="gp-file" data-gpread="chart" data-gpfrom="${it.id}">${ic('music')}<span>Chart con acordes</span></button>` : ''}<span class="small muted" id="gpFilesWait">Buscando archivos…</span></div></div>
+      <div class="gp-sec"><div class="lab">${ic('play')} Referencia</div>
+        ${yt && audio ? `<div class="gp-tabs" data-on="${first}"><button type="button" data-gpref="youtube" class="${first === 'youtube' ? 'on' : ''}">${ic('play')} Video</button><button type="button" data-gpref="audio" class="${first === 'audio' ? 'on' : ''}">${ic('mic')} Audio nuestro</button></div>` : ''}
+        ${yt ? `<div class="gp-ref" data-ref="youtube"${first === 'youtube' ? '' : ' hidden'}>${ytCard}</div>` : ''}
+        ${audio ? `<div class="gp-ref" data-ref="audio"${first === 'audio' ? '' : ' hidden'}><div class="small muted">Cargando el audio…</div></div>` : ''}
+        ${!yt && !audio ? '<span class="small muted">Sin referencia.</span>' : ''}</div>
+      <div class="gp-sec"><div class="lab">${ic('message')} Comentarios</div><div id="gpComments"><div class="small muted">Cargando…</div></div></div>`;
+    // (Se escribe en ESTE bloque, no por id: si la lista se redibuja, el bloque nuevo hace lo suyo.)
+    const q = (s) => el.querySelector(s);
+    songFiles(it.songId).then((files) => {
+      const charts = files.filter((f) => !isAudio(f));
+      const box = q('.gp-files');
+      if (q('#gpFilesWait')) q('#gpFilesWait').remove();
+      box.insertAdjacentHTML('beforeend', charts.map((f) => `<button type="button" class="gp-file" data-gpread="chart" data-gpfrom="${it.id}">${f.type === 'application/pdf' ? ic('file') : ic('image')}<span>${esc(f.name || 'Archivo')}</span></button>`).join(''));
+      if (!box.children.length) box.innerHTML = '<span class="small muted">Sin charts todavía.</span>';
+      if (!audio) return;
+      const f = files.find((x) => x.id === it.audioId);
+      const au = q('[data-ref="audio"]');
+      if (!f) { au.innerHTML = '<div class="small muted">Este audio ya no está.</div>'; return; }
+      return fileData(it.songId, f).then((d) => { au.innerHTML = `<audio controls preload="metadata" src="${d.url}"></audio><div class="small muted">${esc(f.name || 'Audio')}${f.byName ? ' · ' + esc(f.byName) : ''}</div>`; });
+    }).catch(() => { if (q('#gpFilesWait')) q('#gpFilesWait').textContent = 'No se pudieron cargar los archivos.'; });
+    if (commentsOff) commentsOff();
+    commentsOff = api.watchComments(date, it.id, (list) => { comments = list; renderComments(); });
+    return el;
+  }
+  // Mostrar una parte (video o audio, la letra completa) con un fundido suave.
+  const fadeIn = (x) => { if (x && x.animate && !reducedMotion()) x.animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 360, easing: 'cubic-bezier(.22,1,.36,1)' }); };
+  function renderComments() {
+    const box = $('gpComments');
+    if (!box) return;
+    box.innerHTML = comments.map((c) => `<div class="comment"><span class="c-av">${face({ name: c.byName })}</span><b>${esc(c.byName || '')}</b> <small>${new Date(c.at).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</small><p>${esc(c.text)}</p></div>`).join('') || '<div class="small muted">Sin comentarios.</div>';
+  }
+  function select(id) {
+    const prev = sel;
+    sel = sel === id ? null : id;
+    if (commentsOff) { commentsOff(); commentsOff = null; }
+    haptic(6);
+    const box = $('gpList');
+    const old = $('gpDetail');
+    if (old) { old.removeAttribute('id'); old.querySelectorAll('[id]').forEach((x) => x.removeAttribute('id')); gpSlide(old, false, () => old.remove()); }
+    const oldRow = prev && box.querySelector(`[data-gpitem="${prev}"]`);
+    if (oldRow) oldRow.classList.remove('open');
+    const row = sel && box.querySelector(`[data-gpitem="${sel}"]`);
+    if (!row) return;
+    row.classList.add('open');
+    const body = detail(items.find((x) => x.id === sel));
+    row.appendChild(body);
+    gpSlide(body, true);
+    // Si el canto quedó muy abajo, la pantalla lo acompaña suave cuando termina de abrir.
+    setTimeout(() => {
+      if (!row.isConnected) return;
+      const r = row.getBoundingClientRect();
+      if (r.top < 70 || r.top > innerHeight * 0.55) row.scrollIntoView({ block: 'start', behavior: reducedMotion() ? 'auto' : 'smooth' });
+    }, old ? 380 : 480);
+  }
+  // La tarjeta se adapta a cada lista: pasa de su alto de antes al nuevo con suavidad (más o
+  // menos cantos, con o sin nota), en vez de saltar.
+  function morph(fn) {
+    if (reducedMotion() || !form.animate) { fn(); return; }
+    const h0 = form.getBoundingClientRect().height;
+    form.getAnimations().forEach((a) => { if (a.effect && a.effect.getKeyframes().some((k) => k.height)) a.cancel(); });
+    fn();
+    const h1 = form.getBoundingClientRect().height;
+    if (Math.abs(h1 - h0) > 2) form.animate([{ height: h0 + 'px' }, { height: h1 + 'px' }], { duration: 520, easing: 'cubic-bezier(.33,0,.2,1)' });
+  }
+  let swapping = false;
+  function setDate(d) {
+    if (d === date && itemsOff) return;
+    // Cambio de fecha: lo de antes se queda (un poco atenuado) hasta que llega la lista nueva, y
+    // entonces la tarjeta cambia de alto una sola vez y lo nuevo entra suave.
+    swapping = !!date && d !== date;
+    date = d;
+    sel = null;
+    if (itemsOff) { itemsOff(); itemsOff = null; }
+    if (commentsOff) { commentsOff(); commentsOff = null; }
+    renderDates();
+    if (swapping) { ['gpSvc', 'gpList'].forEach((id) => $(id) && $(id).classList.add('gp-wait')); }
+    else { items = null; renderSvc(); renderList(); }
+    if (!date) { swapping = false; items = null; morph(() => { renderSvc(); renderList(); }); return; }
+    itemsOff = api.watchItems(date, (list) => {
+      const first = items === null || swapping;
+      const wasSwap = swapping;
+      swapping = false;
+      items = list;
+      // Al cambiar algo en la lista no se cierra el canto abierto (solo se redibuja la lista).
+      const keepOpen = sel && list.some((x) => x.id === sel);
+      if (!keepOpen) sel = null;
+      const draw = () => {
+        ['gpSvc', 'gpList'].forEach((id) => $(id) && $(id).classList.remove('gp-wait'));
+        renderSvc();
+        renderList();
+      };
+      if (first) morph(draw); else draw();
+      if (first && !reducedMotion()) {
+        if (wasSwap && $('gpSvc').animate) $('gpSvc').animate([{ opacity: 0, transform: 'translateY(6px)' }, { opacity: 1, transform: 'none' }], { duration: 420, easing: 'cubic-bezier(.25,.8,.25,1)' });
+        $('gpList').querySelectorAll('.gp-item').forEach((x) => x.classList.add('enter'));
+      }
+      prefetchSongs(list.map((it) => it.songId));
+    }, () => { swapping = false; items = []; morph(() => { ['gpSvc', 'gpList'].forEach((id) => $(id) && $(id).classList.remove('gp-wait')); renderSvc(); renderList(); }); });
+  }
+  const refresh = () => {
+    if (!on) return;
+    if (!date || !services.some((s) => s.date === date)) { const d = pickDefault(); if (d !== date || !itemsOff) { setDate(d); return; } }
+    renderDates(); renderSvc();
+  };
+  form.addEventListener('click', (e) => {
+    if (!on) return;
+    const d = e.target.closest('[data-gpdate]');
+    if (d) { haptic(5); setDate(d.dataset.gpdate); return; }
+    const s = e.target.closest('[data-gpsel]');
+    if (s) { select(s.dataset.gpsel); return; }
+    // Video de YouTube: primero su imagen; al tocarla se carga y empieza.
+    const y = e.target.closest('[data-gpyt]');
+    if (y) {
+      haptic(5);
+      const v = Object.assign(document.createElement('div'), { className: 'video' });
+      v.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${y.dataset.gpyt}?rel=0&playsinline=1&autoplay=1" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+      y.replaceWith(v);
+      fadeIn(v);
+      return;
+    }
+    const t = e.target.closest('[data-gpref]');
+    if (t) {
+      const box = t.closest('.gp-sec');
+      haptic(5);
+      box.querySelector('.gp-tabs').dataset.on = t.dataset.gpref;
+      box.querySelectorAll('[data-gpref]').forEach((b) => b.classList.toggle('on', b === t));
+      box.querySelectorAll('.gp-ref').forEach((p) => { const show = p.dataset.ref === t.dataset.gpref; if (show && p.hidden) { p.hidden = false; fadeIn(p); } else if (!show) p.hidden = true; });
+      return;
+    }
+    const r = e.target.closest('[data-gpread]');
+    if (r && items && items.length) {
+      haptic(6);
+      const keys = Object.fromEntries(items.map((it) => [it.songId, val(it, 'key')]));
+      const start = Math.max(0, items.findIndex((it) => it.id === (r.dataset.gpfrom || sel)));
+      openChartReader({ songIds: items.map((it) => it.songId), start, keys, mode: r.dataset.gpread, date });
+    }
+  });
+  return {
+    start() {
+      if (on) return;
+      on = true;
+      guestWatch();
+      subs.push(onServices(refresh), onSongs(() => { if (on) { renderList(); } }));
+      refresh();
+      renderDates(); renderSvc(); renderList();
+    },
+    stop() {
+      if (!on) return;
+      on = false;
+      subs.splice(0).forEach((f) => f());
+      if (itemsOff) { itemsOff(); itemsOff = null; }
+      if (commentsOff) { commentsOff(); commentsOff = null; }
+      date = ''; items = null; sel = null;
+      closeChartReader(true);
+      stopGuest();
+    },
+  };
+}
 function viewLogin() {
   let last = '';
   try { last = localStorage.getItem(LAST_EMAIL_KEY) || ''; } catch { /* sin almacenamiento */ }
@@ -1331,27 +1670,69 @@ function viewLogin() {
     <div class="lg-mark" aria-hidden="true"><img class="s" src="medios-sol.png" alt=""><img class="a" src="medios-aguila.png" alt=""></div>
     <form class="lg-card" id="lgForm" novalidate>
       <div class="lg-head"><span class="lg-brand">LIS<span>T</span>AS</span><span class="lg-tag">Listas de alabanza</span></div>
-      <h2>${last ? 'Qué bueno verte' : 'Bienvenido'}</h2>
-      <p class="lg-sub">${last ? 'Entra para ver las listas del servicio.' : 'Entra con el correo que te dio tu moderador.'}</p>
-      <label class="lg-field">
+      <div class="lg-seg" role="tablist" aria-label="Cómo entras">
+        <button type="button" role="tab" data-lgmode="cuenta">Moderador o colaborador</button>
+        <button type="button" role="tab" data-lgmode="part">Participante</button>
+      </div>
+      <h2 id="lgTitle">${last ? 'Qué bueno verte' : 'Bienvenido'}</h2>
+      <p class="lg-sub" id="lgSub"></p>
+      <div class="lg-part" id="gpPanel">
+        <div class="gp-dates" id="gpDates"></div>
+        <div id="gpSvc"></div>
+        <div id="gpList"></div>
+      </div>
+      <label class="lg-field lg-acc">
         <span class="lg-ic">${LG_ICONS.mail}</span>
         <input id="lgEmail" type="email" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" placeholder=" " value="${esc(last)}">
         <span class="lg-label">Correo</span>
       </label>
-      <label class="lg-field">
+      <label class="lg-field lg-acc">
         <span class="lg-ic">${LG_ICONS.lock}</span>
         <input id="lgPass" type="password" autocomplete="current-password" placeholder=" ">
         <span class="lg-label">Contraseña</span>
         <button type="button" class="lg-eye" id="lgEye" aria-label="Mostrar la contraseña">${LG_ICONS.eye}</button>
       </label>
-      <div class="lg-err" id="lgErr" role="alert"></div>
-      <button class="lg-go" id="lgIn" type="submit"><span>Entrar</span><i>${LG_ICONS.arrow}</i></button>
-      <button type="button" class="lg-forgot" id="lgReset">¿Olvidaste tu contraseña?</button>
-      <div id="lgFirst"></div>
-      <p class="lg-note">${LG_ICONS.lock}<span>Las cuentas las crea un <b>moderador</b>. Al entrar, este teléfono recuerda tu sesión.</span></p>
+      <div class="lg-err lg-acc" id="lgErr" role="alert"></div>
+      <button class="lg-go lg-acc" id="lgIn" type="submit"><span>Entrar</span><i>${LG_ICONS.arrow}</i></button>
+      <button type="button" class="lg-forgot lg-acc" id="lgReset">¿Olvidaste tu contraseña?</button>
+      <div id="lgFirst" class="lg-acc"></div>
+      <p class="lg-note lg-acc">${LG_ICONS.lock}<span>Las cuentas las crea un <b>moderador</b>. Al entrar, este teléfono recuerda tu sesión.</span></p>
     </form>
   </div>`;
   const form = $('lgForm');
+  // Dos formas de entrar: con cuenta (moderador o colaborador) o como participante (solo ver las listas).
+  const setMode = (m) => {
+    const part = m === 'part';
+    const was = form.classList.contains('part');
+    const animate = was !== part && form.classList.contains('ready') && !reducedMotion() && !!form.animate;
+    // La tarjeta cambia de tamaño con calma (de su tamaño de antes al nuevo, sin saltos) y lo nuevo
+    // entra poco a poco, de arriba abajo.
+    const from = form.getBoundingClientRect();
+    form.classList.toggle('part', part);
+    $('lgWrap').classList.toggle('part', part);
+    form.querySelector('.lg-seg').dataset.on = part ? 'part' : 'cuenta';
+    if (part) guestPanel.start(); else guestPanel.stop();
+    if (animate) {
+      const to = form.getBoundingClientRect();
+      // Curva pareja (empieza y termina despacio): se ve cómo crece, no salta.
+      const ease = 'cubic-bezier(.45,0,.2,1)';
+      form.getAnimations().forEach((a) => { if (a.effect && a.effect.getKeyframes().some((k) => k.height)) a.cancel(); });
+      form.animate([{ width: from.width + 'px', height: from.height + 'px' }, { width: to.width + 'px', height: to.height + 'px' }], { duration: 720, easing: ease });
+      const parts = part ? [...$('gpPanel').children] : [...form.querySelectorAll(':scope > .lg-acc')];
+      [$('lgTitle'), $('lgSub'), ...parts].forEach((x, i) => x.animate([{ opacity: 0, transform: 'translateY(12px)' }, { opacity: 1, transform: 'none' }], { duration: 600, delay: 140 + i * 70, easing: 'cubic-bezier(.25,.8,.25,1)', fill: 'backwards' }));
+    }
+    form.querySelectorAll('[data-lgmode]').forEach((b) => { const on = b.dataset.lgmode === m; b.classList.toggle('on', on); b.setAttribute('aria-selected', String(on)); });
+    $('lgTitle').textContent = part ? 'Participante' : last ? 'Qué bueno verte' : 'Bienvenido';
+    $('lgSub').textContent = part ? 'Las listas del servicio, sin cuenta.' : last ? 'Entra para ver y armar las listas del servicio.' : 'Entra con el correo que te dio tu moderador.';
+    try { localStorage.setItem(LOGIN_MODE_KEY, m); } catch { /* sin almacenamiento */ }
+  };
+  let mode0 = 'cuenta';
+  try { mode0 = localStorage.getItem(LOGIN_MODE_KEY) === 'part' ? 'part' : 'cuenta'; } catch { /* sin almacenamiento */ }
+  const guestPanel = guestPanelIn(form);
+  viewSubs.push(() => guestPanel.stop());
+  setMode(mode0);
+  setTimeout(() => form.classList.add('ready'), reducedMotion() ? 0 : 2300);
+  form.querySelectorAll('[data-lgmode]').forEach((b) => { b.onclick = () => { haptic(6); form.classList.add('ready'); setMode(b.dataset.lgmode); $('lgWrap').scrollLeft = 0; }; });
   // El teclado no tapa lo que escribes: se mide cuánto ocupa (visualViewport) y la tarjeta sube
   // para quedar centrada en lo que queda visible; el campo elegido se asegura a la vista.
   const wrap = $('lgWrap');
@@ -2800,11 +3181,8 @@ function openChartReader({ songIds, start = 0, keys = {}, onClose, mode = 'chart
       }
       const tx = trDe(id);
       if (s.chart) content.insertAdjacentHTML('beforeend', `<pre class="cr-chart">${esc(tx ? Transponer.chartTexto(s.chart, tx.semi, Transponer.nombresPara(tx.hacia)) : s.chart)}</pre>`);
-      if (!files.length && !s.chart) {
-        const secs = sectionsOf(s.text);
-        content.innerHTML = `<div class="cr-msg">Este canto no tiene chart todavía. Se muestra la letra.</div>` +
-          (secs.map((x) => `<div class="cr-sec">${x.name ? secChip(x.name) : ''}<div class="cr-lyr">${esc(x.body)}</div></div>`).join('') || '<div class="cr-msg">Tampoco tiene letra.</div>');
-      }
+      // En «Chart» solo van charts (la letra está en «Letra»): si este canto no tiene, solo se avisa.
+      if (!files.length && !s.chart) content.innerHTML = `<div class="cr-msg"><b>${esc(s.title || 'Este canto')}</b><br>Todavía no tiene chart. Pasa al siguiente con ›</div>`;
       box.ink = inkLayer(box, id);
       if (built.get(cur) === box) syncInkUi();
     });
@@ -4164,7 +4542,9 @@ function viewTeam() {
   };
 }
 // Selector de rol con la píldora que se desliza.
-const roleTabs = (id, sel) => `<div class="tabs" id="${id}">${['moderador', 'colaborador', 'participante'].map((r) => `<button data-r="${r}" class="${sel === r ? 'on' : ''}">${ROLES[r]}</button>`).join('')}</div>`;
+// Las cuentas nuevas son solo de moderador o colaborador: los participantes entran sin cuenta.
+// (Una cuenta de participante que ya existía todavía se puede editar.)
+const roleTabs = (id, sel, roles = ['moderador', 'colaborador']) => `<div class="tabs" id="${id}">${roles.map((r) => `<button data-r="${r}" class="${sel === r ? 'on' : ''}">${ROLES[r]}</button>`).join('')}</div>`;
 const ROLE_HELP = { moderador: 'Acceso a todo: listas, cantos, equipo y avisos.', colaborador: 'Hace su lista, la envía, sugiere cantos, sube charts y comenta.', participante: 'Solo ve las listas y comenta.' };
 function bindRoleTabs(id, onPick) {
   $(id).onclick = (e) => { const b = e.target.closest('[data-r]'); if (!b) return; $(id).querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b)); haptic(5); onPick(b.dataset.r); };
@@ -4217,7 +4597,7 @@ function shareAccess(name, email, pass, role) {
 function editMember(m) {
   let role = m.role;
   openSheet(`<div class="member" style="border:0;padding-top:0"><span class="av">${face(m)}</span><div class="grow"><b>${esc(m.name)}</b><div class="small muted">${esc(m.email || '')}</div></div></div>
-    <label class="l">Rol</label>${roleTabs('emRole', ['moderador', 'colaborador', 'participante'].includes(role) ? role : '')}
+    <label class="l">Rol</label>${roleTabs('emRole', ['moderador', 'colaborador', 'participante'].includes(role) ? role : '', role === 'participante' ? ['moderador', 'colaborador', 'participante'] : undefined)}
     <div class="small muted" id="emHelp">${ROLE_HELP[role] || 'Elige un rol para darle acceso.'}</div>
     <button class="btn" id="emSave">Guardar</button>
     ${api.demo || !m.email ? '' : '<button class="btn ghost" id="emReset">Enviarle un correo para cambiar su contraseña</button>'}
@@ -4516,6 +4896,8 @@ addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEven
     me = null;
     notifs = []; notifsReady = false; servicesLoaded = false; services = [];
     if (!u) { route(); return; }
+    // Entró con cuenta: se dejan de mirar las listas como participante.
+    if (guestOff.length) stopGuest();
     memberOff = api.watchMember(u.uid, (m) => {
       const wasMember = isMember();
       const wasRole = me && me.role;
