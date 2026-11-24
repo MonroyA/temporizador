@@ -1135,6 +1135,7 @@ function openSheet(html, onReady) {
   sh.className = 'sheet';
   sh.innerHTML = '<div class="grab"></div>' + html;
   sh.scrollTop = 0;
+  document.documentElement.classList.add('hoja');
   bg.classList.add('open');
   if (onReady) onReady(sh);
 }
@@ -1144,12 +1145,34 @@ function closeSheet(instant) {
   runSheetSubs();
   if (!bg.classList.contains('open')) return;
   const tk = ++sheetToken;
-  const done = () => { if (tk !== sheetToken) return; bg.classList.remove('open', 'closing'); sh.innerHTML = ''; sh.style.transform = ''; sh.style.transition = ''; bg.style.opacity = ''; };
+  const done = () => { if (tk !== sheetToken) return; document.documentElement.classList.remove('hoja'); bg.classList.remove('open', 'closing'); sh.innerHTML = ''; sh.style.transform = ''; sh.style.transition = ''; bg.style.opacity = ''; };
   if (instant === true || reducedMotion()) { done(); return; }
   bg.classList.add('closing');
   setTimeout(done, 280);
 }
 $('sheetBg').addEventListener('click', (e) => { if (e.target === $('sheetBg')) closeSheet(); });
+// En el iPhone, deslizar sobre una parte de la hoja que no se desplaza movía la pantalla de atrás.
+// Solo se deja desplazar lo que de verdad puede moverse en esa dirección (la lista, el cuadro de texto).
+(function sinMoverAtras() {
+  const bg = $('sheetBg');
+  let y0 = 0;
+  const puede = (el, dy) => {
+    for (; el && el !== bg; el = el.parentElement) {
+      const o = getComputedStyle(el).overflowY;
+      if ((o === 'auto' || o === 'scroll') && el.scrollHeight > el.clientHeight + 1) {
+        if (dy > 0 && el.scrollTop > 0) return true; // hacia arriba, y aún hay arriba
+        if (dy < 0 && el.scrollTop + el.clientHeight < el.scrollHeight - 1) return true; // hacia abajo
+        if (dy === 0) return true;
+      }
+    }
+    return false;
+  };
+  bg.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; }, { passive: true });
+  bg.addEventListener('touchmove', (e) => {
+    if (e.touches.length !== 1 || !e.cancelable) return;
+    if (!puede(e.target, e.touches[0].clientY - y0)) e.preventDefault();
+  }, { passive: false });
+}());
 
 // ======================================================================================
 // Movimiento: carga, transiciones, gestos y microinteracciones
@@ -1516,7 +1539,7 @@ function guestPanelIn(form) {
     const dl = `<button type="button" class="gp-dl${got ? ' on' : ''}${job ? ' busy' : ''}" data-gpdl aria-label="${got ? 'Descargada: tocar para quitarla' : 'Descargar para ver sin internet'}">${got ? ic('check') : ic('download')}<span>${job ? (job.total ? Math.round((job.done / job.total) * 100) + '%' : 'Bajando…') : got ? 'Descargada' : 'Descargar'}</span></button>`;
     box.innerHTML = `<div class="gp-svc"><div class="gp-svc-t"><b>${esc(s.title || 'Servicio')}</b><small>${esc(niceDate(s.date))}${s.leaderName ? ' · ministra ' + esc(s.leaderName) : ''}</small></div>
       ${items && items.length ? `<div class="gp-modes"><button type="button" data-gpread="chart">${ic('score')} Chart</button><button type="button" data-gpread="letra">${ic('type')} Letra</button>${dl}</div>` : ''}</div>
-      ${s.note ? `<div class="gp-note">${ic('note')}<span>${esc(s.note)}</span></div>` : ''}`;
+      ${s.note ? `<div class="gp-note">${ic('message')}<span><b>Indicaciones${s.leaderName || s.byName ? ` <small>de ${esc(s.leaderName || s.byName)}</small>` : ''}</b>${indTexto(s.note)}</span></div>` : ''}`;
   }
   function renderList() {
     const box = $('gpList');
@@ -1528,7 +1551,7 @@ function guestPanelIn(form) {
       const yt = ytId(val(it, 'youtube'));
       const hasRef = (refTypeOf(it) === 'audio' && it.audioId) || yt;
       return `<div class="gp-item${it.id === sel ? ' open' : ''}" data-gpitem="${it.id}" style="--i:${i}">
-        <button type="button" class="gp-head" data-gpsel="${it.id}"><span class="gp-num">${i + 1}</span><span class="gp-t"><b>${esc(val(it, 'title') || 'Canto')}</b><small>${esc(val(it, 'author') || '')}${it.notes ? ' · ' + ic('note') + ' indicaciones' : ''}${hasRef ? ' · ' + ic('play') + ' referencia' : ''}</small></span><span class="gp-key">${esc(val(it, 'key') || '—')}</span><span class="gp-chev">›</span></button>
+        <button type="button" class="gp-head" data-gpsel="${it.id}"><span class="gp-num">${i + 1}</span><span class="gp-t"><b>${esc(val(it, 'title') || 'Canto')}</b><small>${esc(val(it, 'author') || '')}${hasRef ? ' · ' + ic('play') + ' referencia' : ''}</small></span><span class="gp-key">${esc(val(it, 'key') || '—')}</span><span class="gp-chev">›</span></button>
       </div>`;
     }).join('');
     if (sel) { const row = box.querySelector(`[data-gpitem="${sel}"]`); if (row) { row.appendChild(detail(items.find((x) => x.id === sel))); } else sel = null; }
@@ -1554,14 +1577,12 @@ function guestPanelIn(form) {
         ${it.byName ? `<span class="gp-chip soft">Lo agregó ${esc(it.byName)}</span>` : ''}
       </div>
       <div class="gp-open"><button type="button" data-gpread="chart" data-gpfrom="${it.id}">${ic('score')} Chart</button><button type="button" data-gpread="letra" data-gpfrom="${it.id}">${ic('type')} Letra</button></div>
-      <div class="gp-sec"><div class="lab">${ic('note')} Indicaciones</div><div class="gp-txt">${it.notes ? esc(it.notes) : '<span class="small muted">Sin indicaciones.</span>'}</div></div>
       <div class="gp-sec"><div class="lab">${ic('score')} Charts y partituras</div><div class="gp-files" id="gpFiles">${song.chart ? `<button type="button" class="gp-file" data-gpread="chart" data-gpfrom="${it.id}">${ic('music')}<span>Chart con acordes</span></button>` : ''}<span class="small muted" id="gpFilesWait">Buscando archivos…</span></div></div>
       <div class="gp-sec"><div class="lab">${ic('play')} Referencia</div>
         ${yt && audio ? `<div class="gp-tabs" data-on="${first}"><button type="button" data-gpref="youtube" class="${first === 'youtube' ? 'on' : ''}">${ic('play')} Video</button><button type="button" data-gpref="audio" class="${first === 'audio' ? 'on' : ''}">${ic('mic')} Audio nuestro</button></div>` : ''}
         ${yt ? `<div class="gp-ref" data-ref="youtube"${first === 'youtube' ? '' : ' hidden'}>${ytCard}</div>` : ''}
         ${audio ? `<div class="gp-ref" data-ref="audio"${first === 'audio' ? '' : ' hidden'}><div class="small muted">Cargando el audio…</div></div>` : ''}
-        ${!yt && !audio ? '<span class="small muted">Sin referencia.</span>' : ''}</div>
-      <div class="gp-sec"><div class="lab">${ic('message')} Comentarios</div><div id="gpComments"><div class="small muted">Cargando…</div></div></div>`;
+        ${!yt && !audio ? '<span class="small muted">Sin referencia.</span>' : ''}</div>`;
     // (Se escribe en ESTE bloque, no por id: si la lista se redibuja, el bloque nuevo hace lo suyo.)
     const q = (s) => el.querySelector(s);
     songFiles(it.songId).then((files) => {
@@ -1576,8 +1597,7 @@ function guestPanelIn(form) {
       if (!f) { au.innerHTML = '<div class="small muted">Este audio ya no está.</div>'; return; }
       return fileData(it.songId, f).then((d) => { au.innerHTML = `<audio controls preload="metadata" src="${d.url}"></audio><div class="small muted">${esc(f.name || 'Audio')}${f.byName ? ' · ' + esc(f.byName) : ''}</div>`; });
     }).catch(() => { if (q('#gpFilesWait')) q('#gpFilesWait').textContent = 'No se pudieron cargar los archivos.'; });
-    if (commentsOff) commentsOff();
-    commentsOff = api.watchComments(date, it.id, (list) => { comments = list; renderComments(); });
+    // (Ya no hay comentarios por canto: las indicaciones generales van arriba de la lista.)
     return el;
   }
   // Mostrar una parte (video o audio, la letra completa) con un fundido suave.
@@ -1991,13 +2011,68 @@ function confirmDeleteList(date) {
     };
   });
 }
+// Texto de las indicaciones: los enlaces se pueden tocar y los de YouTube se ven como video
+// (al tocar la miniatura se reproduce ahí mismo).
+function indTexto(note) {
+  const vids = [];
+  const URL_RE = /\b((?:https?:\/\/|www\.)[^\s<>"]+[^\s<>".,;:!?)»”'])/gi;
+  const partes = String(note || '').split(URL_RE);
+  const txt = partes.map((p, i) => {
+    if (i % 2 === 0) return esc(p);
+    const href = /^https?:/i.test(p) ? p : 'https://' + p;
+    const yt = ytId(p);
+    if (yt) { if (!vids.includes(yt)) vids.push(yt); return `<a href="${esc(href)}" target="_blank" rel="noopener" class="ind-ytl">${ic('play')} Video de YouTube</a>`; }
+    return `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(p.replace(/^https?:\/\/(www\.)?/i, '').slice(0, 40))}${p.length > 48 ? '…' : ''}</a>`;
+  }).join('');
+  const videos = vids.map((id) => `<button type="button" class="ind-yt" data-indyt="${id}" aria-label="Ver el video"><img src="https://i.ytimg.com/vi/${id}/hqdefault.jpg" alt="" loading="lazy"><span class="ind-play">${ic('play')}</span></button>`).join('');
+  return `<p>${txt}</p>${videos ? `<div class="ind-vids">${videos}</div>` : ''}`;
+}
+// Tocar la miniatura: el video se abre ahí mismo (sin internet, se avisa).
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-indyt]');
+  if (!b) return;
+  if (!navigator.onLine) { toast('El video necesita internet'); return; }
+  const v = document.createElement('div');
+  v.className = 'video ind-video';
+  v.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${b.dataset.indyt}?rel=0&playsinline=1&autoplay=1" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+  b.replaceWith(v);
+  if (v.animate && !reducedMotion()) v.animate([{ opacity: 0, transform: 'scale(.97)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: 'cubic-bezier(.22,1,.36,1)' });
+  haptic(5);
+});
+// Caja de indicaciones de la lista (la nota del director o de quien la armó).
+function indicacionesHtml(s, puede) {
+  const quien = s.leaderName || s.byName || '';
+  if (s.note) return `<div class="ind-box"><div class="ind-h">${ic('message')}<span><b>Indicaciones</b>${quien ? `<small>de ${esc(quien)}</small>` : ''}</span>${puede ? `<button type="button" class="ind-ed" data-editnote>${ic('pencil')} Editar</button>` : ''}</div>${indTexto(s.note)}</div>`;
+  return puede ? `<button type="button" class="ind-add" data-editnote>${ic('message')}<span>Agregar indicaciones para el equipo</span>${ic('plus')}</button>` : '';
+}
+function editIndicaciones(date) {
+  const s = services.find((x) => x.date === date);
+  if (!s) return;
+  openSheet(`<h2>${ic('message')} Indicaciones</h2>
+    <p class="muted small" style="margin:0">Las verá todo el equipo hasta arriba de la lista: cómo empezar, el ambiente, quién dirige cada parte…</p>
+    <textarea id="inText" maxlength="400" rows="6" placeholder="Ej.: Entrar con el coro después de la oración. Todo tranquilo en la adoración.">${esc(s.note || '')}</textarea>
+    <div class="small muted" id="inCount" style="text-align:right;margin-top:-4px"></div>
+    <button class="btn" id="inSave">Guardar</button>
+    <button class="btn ghost" id="inCancel">Cancelar</button>`, () => {
+    const cuenta = () => { $('inCount').textContent = `${$('inText').value.length}/400`; };
+    cuenta();
+    $('inText').oninput = cuenta;
+    $('inCancel').onclick = closeSheet;
+    $('inSave').onclick = async () => {
+      try {
+        await busy($('inSave'), api.saveService(date, { note: $('inText').value.trim() }));
+        closeSheet(); haptic(8); toast('Indicaciones guardadas');
+      } catch (e) { toast(e && e.code === 'permission-denied' ? 'No tienes permiso para cambiar esta lista' : 'No se pudo guardar: revisa la conexión'); }
+    };
+  });
+}
 function editService(date) {
   const s = services.find((x) => x.date === date);
   if (!s) return;
   openSheet(`<h2>Editar lista · ${esc(niceDate(date))}</h2>
     <label class="l">Quién ministra</label><select id="esLeader">${leaderOptions(s.leader || s.by)}</select>
     <label class="l">Nombre del servicio</label><input id="esTitle" maxlength="60" value="${esc(s.title || '')}" placeholder="Culto general, Santa Cena…">
-    <label class="l">Nota para el equipo</label><textarea id="esNote" maxlength="400" placeholder="Indicaciones generales">${esc(s.note || '')}</textarea>
+    <label class="l">Indicaciones para el equipo</label><textarea id="esNote" maxlength="400" placeholder="Indicaciones generales">${esc(s.note || '')}</textarea>
     <button class="btn" id="esSave">Guardar</button>
     <button class="btn ghost" id="esSongs">${ic('pencil')} Editar cantos y orden</button>
     <button class="btn red" id="esDel">Borrar esta lista</button>
@@ -3696,7 +3771,7 @@ function viewService(date, selId) {
     const s = svc();
     const isOwner = s.by === user.uid;
     // Recién creada por quien la está armando: se ve que es el paso 3.
-    $('svSteps').innerHTML = isOwner && canCreate() && !sent(s) ? stepsBar(3) + '<div class="hello" style="margin-bottom:8px">Paso 3 de 3 · toca cada alabanza para su tono, referencia y notas</div>' : '';
+    $('svSteps').innerHTML = isOwner && canCreate() && !sent(s) ? stepsBar(3) + '<div class="hello" style="margin-bottom:8px">Paso 3 de 3 · toca cada alabanza para su tono y referencia</div>' : '';
     $('svModes').innerHTML = statusPill(s)
       + (s.sentAt && sent(s) ? `<span class="small muted">${new Date(s.sentAt).toLocaleString('es', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}</span>` : '')
       + (canEditList(s) ? '<span style="margin-left:auto;display:flex;gap:6px"><button class="mode plain" data-editsvc>' + ic('pencil') + ' Editar</button><button class="mode plain danger" data-delsvc>' + ic('trash') + ' Eliminar</button></span>' : '');
@@ -3707,7 +3782,8 @@ function viewService(date, selId) {
       : !sent(s) ? '<button class="btn green" style="margin-top:10px" data-sendlist>' + ic('send') + ' Enviar lista</button>'
       : changed ? `<div class="send-row"><button class="btn" data-sendlist>${ic('send')} Enviar cambios</button>${s.sentSnap ? '<button class="btn ghost" data-cancelchg>' + ic('undo') + ' Cancelar cambios</button>' : ''}</div>`
       : '<div class="small muted" style="margin-top:8px">' + ic('check') + ' Los moderadores ya la recibieron. Si cambias algo, aquí podrás enviar los cambios.</div>';
-    $('svNote').innerHTML = `<div class="field"><div class="lab">${esc(s.title || 'Servicio')}${s.leaderName ? ` · ${ic('mic')} ministra <b style="color:var(--title)">${esc(s.leaderName)}</b>` : ''}</div>${s.note ? `<div class="small">${esc(s.note)}</div>` : ''}
+    // Hasta arriba: las indicaciones de quien dirige o armó la lista (las ve todo el equipo).
+    $('svNote').innerHTML = indicacionesHtml(s, canEditList(s)) + `<div class="field"><div class="lab">${esc(s.title || 'Servicio')}${s.leaderName ? ` · ${ic('mic')} ministra <b style="color:var(--title)">${esc(s.leaderName)}</b>` : ''}</div>
       ${sendBtn}</div>`;
   }
 
@@ -3731,7 +3807,7 @@ function viewService(date, selId) {
     let after = null;
     items.forEach((it, i) => {
       const k = val(it, 'key');
-      const notes = it.notes ? `<span class="sv-tag">${ic('note')} ${esc(it.notes.slice(0, 40))}${it.notes.length > 40 ? '…' : ''}</span>` : '';
+      const notes = ''; // (Las indicaciones ya no van por canto: van arriba, para toda la lista.)
       const head = `<span class="sv-num">${i + 1}</span><span class="sv-t"><b>${esc(val(it, 'title') || 'Sin título')}</b><small>${esc(val(it, 'author') || 'Canto')}${(it.refType || (it.audioId ? 'audio' : '')) === 'audio' && it.audioId ? ' · ' + ic('mic') + ' audio' : ytId(val(it, 'youtube')) ? ' · ' + ic('play') + ' video' : ''}</small>${notes}</span>
           <span class="sv-key">${esc(k || '—')}</span><span class="sv-chev">›</span>`;
       let r = rows.get(it.id);
@@ -3895,9 +3971,6 @@ function viewService(date, selId) {
       <div class="field"><div class="lab">♪ Tonalidad <b style="color:var(--blue);margin-left:auto;font-size:15px">${esc(k || '—')}</b></div>
         ${canEdit(it) ? `<div class="keys">${KEYS.map((x) => `<button data-key="${x}" class="${k.replace('m', '') === x ? 'on' : ''}">${x}</button>`).join('')}</div>
         <div class="keyline"><button class="mode${/m$/.test(k) ? ' on' : ''}" data-minor>Menor</button><span class="small muted">${song.key && song.key !== k ? 'Original: ' + esc(song.key) : ''}</span></div>` : ''}</div>
-      <div class="field"><div class="lab">${ic('note')} Indicaciones</div>${canEdit(it) ? `<textarea id="dtNotes" placeholder="Quién empieza, repeticiones, dinámica…">${esc(it.notes || '')}</textarea><div class="send" style="justify-content:flex-end"><button data-savenotes>Guardar</button></div>` : `<div>${esc(it.notes || '—')}</div>`}</div>
-      <div class="field"><div class="lab">${ic('message')} Comentarios</div><div id="dtComments"><div class="small muted">Cargando…</div></div>
-        <div class="send"><input id="dtComment" maxlength="400" placeholder="Escribe un comentario…"><button data-comment>Enviar</button></div></div>
       ${it.songId ? `<div class="field"><div class="lab">${ic('file')} Charts, partituras y letra</div><button class="btn ghost" data-go="#/cantos" data-songopen="${it.songId}">Abrir el canto</button></div>` : ''}
       ${canEditList(svc()) ? `<div class="reorder"><button data-move="-1">↑ Subir</button><button data-move="1">↓ Bajar</button></div>` : ''}
       ${canEdit(it) ? '<button class="btn red" style="margin-top:12px" data-delitem>Quitar de esta lista</button>' : ''}`;
@@ -3911,8 +3984,6 @@ function viewService(date, selId) {
       const cur = items.find((x) => x.id === it.id) || it;
       if (canEdit(cur) && refTypeOf(cur) !== b.dataset.ref) api.updateItem(date, it.id, { refType: b.dataset.ref }).catch(() => {});
     };
-    if (commentsOff) commentsOff();
-    commentsOff = api.watchComments(date, it.id, (list) => { comments = list; renderComments(); });
   }
   // Cambia entre video y audio: la píldora se desliza y el contenido aparece con un fundido suave.
   // Los dos quedan cargados, así que el video no se recarga al volver.
@@ -3968,6 +4039,7 @@ function viewService(date, selId) {
     }
     if (t.closest('[data-cancelchg]')) { cancelChanges(t.closest('[data-cancelchg]')); return; }
     if (t.closest('[data-editsvc]')) { editService(date); return; }
+    if (t.closest('[data-editnote]')) { editIndicaciones(date); return; }
     if (t.closest('[data-delsvc]')) { confirmDeleteList(date); return; }
     const so = t.closest('[data-songopen]');
     if (so) { sessionStorage.setItem('abrirCanto', so.dataset.songopen); return; }
