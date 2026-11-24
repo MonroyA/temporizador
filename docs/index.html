@@ -461,6 +461,36 @@
   .gp-modes .gp-dl.busy svg { animation: gpPulse 1s ease-in-out infinite; }
   .gp-note { display: flex; gap: 10px; padding: 12px 14px; border-radius: 14px; background: rgba(255,255,255,.05); font-size: 13px; line-height: 1.45; color: rgba(255,255,255,.8); }
   .gp-note svg { margin-top: 2px; color: #8be3d6; }
+  .gp-note { background: linear-gradient(135deg, rgba(65,172,164,.16), rgba(255,255,255,.05)); border: 1px solid rgba(139,227,214,.22); font-size: 14px; color: rgba(255,255,255,.9); white-space: pre-line; animation: fadeUp .4s var(--ease) both; }
+  .gp-note b { display: block; margin-bottom: 3px; color: #8be3d6; font-size: 12.5px; letter-spacing: .02em; white-space: normal; }
+  .gp-note b small { font-weight: 600; color: rgba(255,255,255,.55); margin-left: 2px; }
+  /* Indicaciones de la lista (dentro de la app) */
+  .ind-box { position: relative; margin-bottom: 12px; padding: 12px 14px 13px; border-radius: 18px; background: linear-gradient(135deg, color-mix(in srgb, var(--blue) 14%, transparent), var(--glass)); border: 1px solid color-mix(in srgb, var(--blue) 28%, var(--glass-line)); box-shadow: var(--shadow); animation: fadeUp .4s var(--ease) both; }
+  .ind-h { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .ind-h > svg { width: 18px; height: 18px; color: var(--blue2); flex: none; }
+  .ind-h span { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; }
+  .ind-h b { color: var(--title); font-size: 14.5px; }
+  .ind-h small { color: var(--muted, #8a94a8); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ind-ed { border: 0; background: var(--chip); color: var(--title); border-radius: 99px; padding: 5px 11px; font-size: 12px; font-weight: 700; display: inline-flex; align-items: center; gap: 4px; }
+  .ind-ed svg { width: 13px; height: 13px; }
+  .ind-box p { margin: 0; font-size: 14.5px; line-height: 1.5; color: var(--text); white-space: pre-line; overflow-wrap: anywhere; }
+  .gp-note > span { display: block; flex: 1; min-width: 0; }
+  .gp-note p { margin: 0; overflow-wrap: anywhere; }
+  .ind-box a, .gp-note a { color: var(--blue2); font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+  .gp-note a { color: #8be3d6; }
+  .ind-ytl { display: inline-flex; align-items: center; gap: 4px; text-decoration: none !important; }
+  .ind-ytl svg { width: 13px !important; height: 13px !important; margin: 0 !important; }
+  .ind-vids { display: grid; gap: 8px; margin-top: 10px; }
+  .ind-yt { position: relative; display: block; width: 100%; aspect-ratio: 16 / 9; padding: 0; border: 0; border-radius: 14px; overflow: hidden; background: #000; cursor: pointer; }
+  .ind-yt img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .4s var(--ease); }
+  .ind-yt:active img { transform: scale(1.03); }
+  .ind-play { position: absolute; left: 50%; top: 50%; width: 54px; height: 54px; margin: -27px 0 0 -27px; border-radius: 50%; display: grid; place-items: center; background: rgba(0,0,0,.55); color: #fff; box-shadow: 0 6px 18px rgba(0,0,0,.4); }
+  .ind-play svg { width: 24px !important; height: 24px !important; margin: 0 0 0 3px !important; color: #fff !important; }
+  .ind-video { margin-top: 10px; border-radius: 14px; overflow: hidden; }
+  .ind-add { width: 100%; display: flex; align-items: center; gap: 10px; margin-bottom: 12px; padding: 13px 14px; border-radius: 18px; border: 1.5px dashed color-mix(in srgb, var(--blue) 40%, var(--glass-line)); background: transparent; color: var(--blue2); font-weight: 700; font-size: 14px; text-align: left; transition: background .2s; }
+  .ind-add span { flex: 1; }
+  .ind-add svg { width: 18px; height: 18px; flex: none; }
+  .ind-add:active { background: var(--chip); }
   #gpList { display: flex; flex-direction: column; gap: 8px; }
   .gp-item { border-radius: 18px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); transition: background .3s, border-color .3s; }
   .gp-item.open { background: rgba(255,255,255,.08); border-color: rgba(139,227,214,.3); }
@@ -1014,11 +1044,15 @@
   .slide-card { align-self: stretch; white-space: pre-line; font-size: 15.5px; line-height: 1.5; color: var(--text); background: var(--field); border-radius: 14px; padding: 10px 14px; border-left: 4px solid var(--k, var(--blue2)); }
   .k-otro.slide-card { --k: var(--blue2); }
   /* Hoja: que quepa en el iPhone aunque esté la barra de Safari (dvh = alto visible) */
-  .sheet { max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); padding-bottom: calc(var(--safe-b) + 28px); overscroll-behavior: contain; }
+  /* (y nunca debajo de la barra de la hora: ahí el iPhone desenfoca lo que queda debajo) */
+  .sheet { max-height: calc(100vh - var(--safe-t, 0px) - 16px); max-height: calc(100dvh - var(--safe-t, 0px) - 16px); padding-bottom: calc(var(--safe-b) + 28px); overscroll-behavior: contain; }
+  /* Con una hoja abierta, la pantalla de atrás no se mueve */
+  html.hoja, html.hoja body { overflow: hidden; overscroll-behavior: none; }
+  .sheet-bg { overscroll-behavior: contain; }
   /* Sin esto, con mucho contenido los botones se aplastaban para caber (se veían cortados) */
   .sheet > * { flex-shrink: 0; }
   /* «Pegar lista»: alto fijo; título arriba, la lista se desplaza en medio, botones fijos abajo */
-  .sheet.pl-sheet { height: calc(100vh - 24px); height: calc(100dvh - 24px); overflow: hidden; gap: 0; padding-bottom: 0; }
+  .sheet.pl-sheet { height: calc(100vh - var(--safe-t, 0px) - 16px); height: calc(100dvh - var(--safe-t, 0px) - 16px); overflow: hidden; gap: 0; padding-bottom: 0; }
   .pl-sheet .pl-head { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; }
   .sheet > .pl-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
     display: flex; flex-direction: column; gap: 10px; margin: 0 -20px; padding: 2px 20px 18px;
