@@ -1132,6 +1132,7 @@ function openSheet(html, onReady) {
   const bg = $('sheetBg'), sh = $('sheet');
   bg.classList.remove('closing');
   sh.style.transform = ''; sh.style.transition = ''; bg.style.opacity = '';
+  sh.className = 'sheet';
   sh.innerHTML = '<div class="grab"></div>' + html;
   sh.scrollTop = 0;
   bg.classList.add('open');
@@ -1282,6 +1283,9 @@ function animateView() {
   sh.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) return;
     const fromGrab = e.target.closest('.grab');
+    // Dentro de una parte que se desplaza sola (la lista de «Pegar lista») el dedo es para desplazar,
+    // nunca para cerrar: se cierra desde la barrita o el título.
+    if (!fromGrab && e.target.closest('.sheet-scroll')) return;
     if (!fromGrab && sh.scrollTop > 0) return;
     if (e.target.closest('input, textarea, select, .keys, .chart, .video')) return;
     sy = e.touches[0].clientY; dy = 0; on = true; dragging = false; t0 = Date.now();
@@ -2072,16 +2076,18 @@ function viewPicker(date) {
     if (canEditList(s())) {
       $('pkMine').innerHTML = items.map((it, i) => {
         const song = songById(it.songId) || {};
-        return `<div class="pick${fxOn(it.songId) || fxOn(it.id) ? ' pop' : ''}"><span class="mine-num">${i + 1}</span><span class="t"><b>${esc(song.title || it.title || 'Canto')}</b><small>${esc(it.key || song.key || '—')}${song.author ? ' · ' + esc(song.author) : ''}</small></span>
+        return `<div class="pick${fxOn('in:' + it.songId) ? ' llega' : fxOn(it.songId) || fxOn(it.id) ? ' pop' : ''}"><span class="mine-num">${i + 1}</span><span class="t"><b>${esc(song.title || it.title || 'Canto')}</b><small>${esc(it.key || song.key || '—')}${song.author ? ' · ' + esc(song.author) : ''}</small></span>
           <span class="order-btns"><button data-up="${it.id}" aria-label="Subir">${ic('chevUp')}</button><button data-down="${it.id}" aria-label="Bajar">${ic('chevDown')}</button></span>
           <button class="pm rem" data-rem="${it.id}" aria-label="Quitar">${ic('minus')}</button></div>`;
       }).join('') || '<div class="empty">Aún no elegiste cantos. Búscalos abajo y toca <b>+</b>.</div>';
     }
     $('pkAll').innerHTML = songs.filter((x) => !q || (x.title + ' ' + (x.author || '')).toLowerCase().includes(q)).map((x) => {
       const it = inList.get(x.id);
-      return `<div class="pick"><span class="t"><b>${esc(x.title)}</b><small>${esc(x.key || '—')}${x.author ? ' · ' + esc(x.author) : ''}${x.status === 'sugerido' ? ' · sugerido' : ''}</small></span>
+      return `<div class="pick${fxOn('in:' + x.id) ? ' vuelve' : ''}"><span class="t"><b>${esc(x.title)}</b><small>${esc(x.key || '—')}${x.author ? ' · ' + esc(x.author) : ''}${x.status === 'sugerido' ? ' · sugerido' : ''}</small></span>
         ${it ? `<button class="pm rem${fxOn(x.id) ? ' morph' : ''}" data-rem="${it.id}" aria-label="Quitar">${ic('minus')}</button>` : `<button class="pm add${fxOn('out:' + x.id) ? ' morph' : ''}" data-add="${x.id}" aria-label="Agregar">${ic('plus')}</button>`}</div>`;
     }).join('') || '<div class="empty">Sin resultados. Créalo con «Canto nuevo».</div>';
+    // La llegada se anima una sola vez: si se vuelve a dibujar enseguida, no se repite (sin cortes).
+    if (fxKey.startsWith('in:') && inList.has(fxKey.slice(3))) fxKey = '';
   };
   const move = async (id, dir) => {
     const i = items.findIndex((x) => x.id === id);
@@ -2093,7 +2099,24 @@ function viewPicker(date) {
   $('view').onclick = async (e) => {
     const t = e.target;
     const add = t.closest('[data-add]');
-    if (add) { const song = songById(add.dataset.add); haptic(); fx(song.id); await addToList(date, items, song.id, song, true); return; }
+    if (add) {
+      const song = songById(add.dataset.add);
+      haptic();
+      // El renglón se va a la izquierda desenfocándose; luego el canto llega a «Tu lista» desde la
+      // izquierda, enfocándose poco a poco (y el renglón vuelve a su lugar ya con el −).
+      const row = add.closest('.pick');
+      if (row && row.animate && !reducedMotion()) {
+        row.style.pointerEvents = 'none';
+        const a = row.animate([
+          { transform: 'none', filter: 'blur(0)', opacity: 1 },
+          { transform: 'translateX(-46px)', filter: 'blur(6px)', opacity: 0 },
+        ], { duration: 230, easing: 'cubic-bezier(.4,0,.7,.2)', fill: 'forwards' });
+        await Promise.race([a.finished.catch(() => {}), wait(320)]);
+      }
+      fx('in:' + song.id);
+      await addToList(date, items, song.id, song, true);
+      return;
+    }
     const rem = t.closest('[data-rem]');
     if (rem) {
       const it = items.find((x) => x.id === rem.dataset.rem);
@@ -4342,7 +4365,9 @@ async function leerImagen(file, onProg, recorte) {
 
 function pasteList(date, items) {
   let filas = [];
-  openSheet(`<h2>${ic('clipboard')} Pegar lista</h2>
+  // Hoja de alto fijo: título arriba, la lista se desplaza en medio y los botones quedan fijos abajo.
+  openSheet(`<h2 class="pl-head">${ic('clipboard')} Pegar lista</h2>
+    <div class="pl-body sheet-scroll">
     <p class="muted small" style="margin:0 0 8px">Escribe o pega la lista, o súbela en una foto o captura. Un canto por línea; si trae el tono al inicio («Dm tu has sido fiel») se usa ese tono. Los títulos como «Adoración:» se saltan.</p>
     <div class="pl-in">
       <textarea id="plText" rows="9" placeholder="Escribe o pega la lista aquí…&#10;&#10;Dm tu has sido fiel&#10;Em yo haré una fiesta&#10;Adoración:&#10;D Dame de beber"></textarea>
@@ -4350,8 +4375,9 @@ function pasteList(date, items) {
     </div>
     <div class="pl-ocr" id="plOcr" hidden></div>
     <div id="plPrev"></div>
-    <button class="btn" id="plOk" disabled>Revisar la lista</button>
-    <button class="btn ghost" id="plCancel">Cancelar</button>`, () => {
+    </div>
+    <div class="pl-foot"><button class="btn ghost" id="plCancel">Cancelar</button><button class="btn" id="plOk" disabled>Revisar la lista</button></div>`, (sh) => {
+    sh.classList.add('pl-sheet');
     const enLista = new Set(items.map((x) => x.songId));
     let abierta = -1; // la línea con sus opciones desplegadas
     // Las primeras líneas de la letra, para reconocer el canto de un vistazo.
@@ -4396,7 +4422,7 @@ function pasteList(date, items) {
       // Los que tienen varias opciones y aún no se eligieron (se pueden dejar sin elegir: se saltan).
       const faltan = filas.filter((f) => f.estado === 'duda' && !f.elegido && !f.ya).length;
       $('plOk').disabled = !n;
-      $('plOk').textContent = (n ? `Agregar ${n} canto${n === 1 ? '' : 's'} en este orden` : 'Ningún canto para agregar') + (faltan ? ` · ${faltan} por elegir` : '');
+      $('plOk').textContent = (n ? `Agregar ${n} canto${n === 1 ? '' : 's'}` : 'Ningún canto para agregar') + (faltan ? ` · ${faltan} por elegir` : '');
     };
     // Desplegar / elegir / ver letra o video (sin redibujar todo, así el video no se corta).
     $('plPrev').onclick = (e) => {
