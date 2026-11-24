@@ -10,9 +10,24 @@ const PUSH_URL = CONFIG.PUSH_URL || '';
 const $ = (id) => document.getElementById(id);
 const esc = (t) => String(t == null ? '' : t).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const uid8 = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
-// Demostración: sin Firebase configurado, o con «?demo» abriendo la app en esta misma computadora
-// (para probar cambios sin tocar la nube).
-const DEMO = !FIREBASE_CONFIG.apiKey || (new URLSearchParams(location.search).has('demo') && /^(localhost|127\.0\.0\.1)$/.test(location.hostname));
+// Demostración: sin Firebase configurado, o con «?demo» abriendo la app en esta computadora o desde
+// la red de la casa (el servidor de prueba, para probar en un teléfono real sin tocar la nube).
+// En la app publicada (https://…github.io) nunca aplica.
+const RED_LOCAL = /^(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/.test(location.hostname);
+const DEMO = !FIREBASE_CONFIG.apiKey || (new URLSearchParams(location.search).has('demo') && RED_LOCAL);
+// Reporte de pruebas: en la demostración desde la red de la casa, los errores y los pasos
+// importantes se mandan al servidor de prueba de la PC (así se ve qué pasa en el teléfono).
+const REPORTE = DEMO && RED_LOCAL && location.protocol === 'http:';
+function rlog(...partes) {
+  if (!REPORTE) return;
+  const texto = partes.map((p) => (typeof p === 'string' ? p : (() => { try { return JSON.stringify(p); } catch { return String(p); } })())).join(' ').slice(0, 2000);
+  try { navigator.sendBeacon('/reporte', new Blob([JSON.stringify({ t: Date.now(), texto, ua: navigator.userAgent.slice(0, 120) })], { type: 'text/plain' })); } catch { /* sin reporte */ }
+}
+if (REPORTE) {
+  addEventListener('error', (e) => rlog('ERROR', e.message, (e.filename || '').split('/').pop() + ':' + e.lineno));
+  addEventListener('unhandledrejection', (e) => rlog('PROMESA', (e.reason && (e.reason.stack || e.reason.message)) || String(e.reason)));
+  rlog('abrió la app', innerWidth + 'x' + innerHeight, 'dpr ' + devicePixelRatio);
+}
 
 // ---- Íconos de línea (minimalistas, mismo trazo en toda la app) ----
 // ic('nombre') devuelve el SVG; toma el color del texto donde va.
@@ -44,6 +59,8 @@ const ICON_PATHS = {
   zap: '<path d="M13 2 4 14h7l-1 8 9-12h-7Z"/>',
   eye: '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z"/><circle cx="12" cy="12" r="3"/>',
   check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
+  clipboard: '<rect x="6" y="4" width="12" height="17" rx="2.5"/><path d="M9 4.5V3.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1"/><path d="M9 10h6M9 14h6M9 18h3"/>',
+  copy: '<rect x="8.5" y="8.5" width="12" height="12" rx="2.5"/><path d="M15.5 8.5V5.5a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/>',
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   arrowRight: '<path d="M5 12h14M13 6l6 6-6 6"/>',
   chevUp: '<path d="m6 15 6-6 6 6"/>',
@@ -210,6 +227,30 @@ function demoBackend() {
       if (it2) db.items[sun2][it2[0]].audioId = 'a1';
       save();
     }, 300);
+  }
+  // «?demo&real»: la demostración usa una COPIA del repertorio real (se lee una vez de la nube,
+  // solo lectura; nada se escribe allá). Sirve para probar «Pegar lista» con los cantos de verdad.
+  if (new URLSearchParams(location.search).has('real') && !db.realCargado && FIREBASE_CONFIG.projectId) {
+    db.realCargado = 'cargando';
+    (async () => {
+      const v = (x) => (x == null ? '' : x.stringValue ?? '');
+      let page = '', n = 0;
+      do {
+        const r = await fetch(`https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/(default)/documents/songs?pageSize=300${page ? '&pageToken=' + page : ''}`);
+        const j = await r.json();
+        for (const d of j.documents || []) {
+          const f = d.fields || {};
+          if (v(f.status) === 'borrado') continue;
+          db.songs['r' + d.name.split('/').pop()] = { title: v(f.title), author: v(f.author), key: v(f.key), text: v(f.text), chart: v(f.chart), category: v(f.category), youtube: v(f.youtube), status: 'agregado', seed: false, by: 'demo', at: Date.now() };
+          n++;
+        }
+        page = j.nextPageToken || '';
+      } while (page);
+      db.realCargado = n;
+      save();
+      toast(`Repertorio real cargado en la demostración: ${n} cantos`);
+      rlog('repertorio real cargado:', n);
+    })().catch((e) => { db.realCargado = false; rlog('ERROR al cargar el repertorio real:', String(e && e.message)); });
   }
   // Más fechas enviadas (para cambiar entre listas en la demostración).
   if (!db.seedDates) {
@@ -2013,7 +2054,7 @@ function viewPicker(date) {
     ${stepsBar(2)}
     <div class="hello">Paso 2 de 3</div>
     <h2 class="big">Elige los cantos</h2>
-    <div class="sec" style="margin-top:4px"><h3>Tu lista <span class="muted small" id="pkCount"></span></h3></div>
+    <div class="sec" style="margin-top:4px"><h3>Tu lista <span class="muted small" id="pkCount"></span></h3><button class="link" id="pkPaste">${ic('clipboard')} Pegar lista</button></div>
     <div id="pkMine"></div>
     <div class="sec"><h3>Agregar</h3><button class="link" id="pkNew">${ic('plus')} Canto nuevo</button></div>
     <div class="search" style="margin-bottom:12px"><span>${ic('search')}</span><input id="pkQ" placeholder="Buscar canto o autor…"></div>
@@ -2057,9 +2098,22 @@ function viewPicker(date) {
     if (rem) {
       const it = items.find((x) => x.id === rem.dataset.rem);
       if (it) fx('out:' + it.songId);
-      // El renglón se va deslizando antes de quitarlo.
-      const row = $('pkMine').querySelector(`[data-rem="${rem.dataset.rem}"]`);
-      if (row) { row.closest('.pick').classList.add('leaving'); await wait(220); }
+      // El renglón se desliza y se desvanece, y luego se cierra el hueco con suavidad (los de abajo
+      // suben sin saltar). Recién entonces se quita de la lista.
+      const btn = $('pkMine').querySelector(`[data-rem="${rem.dataset.rem}"]`);
+      const row = btn && btn.closest('.pick');
+      if (row && row.animate && !reducedMotion()) {
+        const cs = getComputedStyle(row);
+        const alto = row.offsetHeight + 'px';
+        row.style.overflow = 'hidden';
+        row.style.pointerEvents = 'none';
+        const a = row.animate([
+          { opacity: 1, transform: 'none', height: alto, marginBottom: cs.marginBottom, paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom },
+          { opacity: 0, transform: 'translateX(28px) scale(.97)', height: alto, marginBottom: cs.marginBottom, paddingTop: cs.paddingTop, paddingBottom: cs.paddingBottom, offset: 0.5 },
+          { opacity: 0, transform: 'translateX(28px) scale(.97)', height: '0px', marginBottom: '0px', paddingTop: '0px', paddingBottom: '0px' },
+        ], { duration: 520, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' });
+        await Promise.race([a.finished.catch(() => {}), wait(700)]);
+      }
       await api.deleteItem(date, rem.dataset.rem); return;
     }
     const up = t.closest('[data-up]');
@@ -2067,6 +2121,7 @@ function viewPicker(date) {
     const dn = t.closest('[data-down]');
     if (dn) { fx(dn.dataset.down); await move(dn.dataset.down, 1); return; }
     if (t.closest('#pkNew')) { editSong(null, { title: $('pkQ').value.trim(), addTo: { date, items, stay: true } }); return; }
+    if (t.closest('#pkPaste')) { if (canEditList(s())) pasteList(date, items); return; }
     if (t.closest('#pkNext')) go(`#/s/${date}`);
   };
   $('pkQ').oninput = (e) => { q = e.target.value.trim().toLowerCase(); render(); };
@@ -4057,6 +4112,411 @@ async function addToList(date, items, songId, song, stay) {
   const id = await api.addItem(date, { songId, order, key: song.key || '', youtube: song.youtube || '', notes: '', by: user.uid, byName: me.name });
   toast(`«${song.title}» agregado a la lista`);
   if (!stay) go(`#/s/${date}/${id}`);
+}
+
+// ======================================================================================
+// «Pegar lista»: se pega la lista tal como llega (p. ej. por WhatsApp: «Dm tu has sido fiel»,
+// títulos de sección como «Adoración:»…) y se agregan los cantos en ese orden, con su tono.
+// Cada línea se busca por el título y también por una frase de la letra. Los que no están en el
+// repertorio se saltan y se muestran al final para agregarlos después.
+// ======================================================================================
+const ListaPegada = (() => {
+  const norm = (t) => String(t || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9ñ\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  const STOP = new Set(['el', 'la', 'los', 'las', 'de', 'del', 'que', 'y', 'a', 'en', 'mi', 'tu', 'te', 'me', 'se', 'un', 'una', 'al', 'lo', 'por', 'con', 'es', 'o', 'oh']);
+  const palabras = (t) => norm(t).split(' ').filter((w) => w && !STOP.has(w));
+  // Títulos de sección y encabezados que no son cantos (se saltan en silencio).
+  const SECCION = /^(alabanza|alabanzas|adoracion|adoraciones|dones|ofrenda|ofrendas|santa cena|cena|ministracion|bienvenida|despedida|coros|apertura|cierre|predica|oracion|bautismos|presentacion de ninos|especial|especiales|lista|cantos|servicio|culto( general)?|(domingo|lunes|martes|miercoles|jueves|viernes|sabado)( \d+)?( de \w+)?)$/;
+  const BEMOL = { 'C#': 'D♭', 'D#': 'E♭', 'G#': 'A♭', 'A#': 'B♭', Db: 'D♭', Eb: 'E♭', Ab: 'A♭', Bb: 'B♭', Gb: 'F#', 'E#': 'F', 'B#': 'C', Cb: 'B', Fb: 'E' };
+  // «Dm», «F#m», «Bb», «C#» → el tono como lo guarda la app (D♭, E♭, A♭, B♭, F#… y «m» si es menor).
+  function tono(tok) {
+    const m = /^([A-G])([#♯b♭]?)(m|min)?$/.exec(String(tok || '').trim());
+    if (!m) return '';
+    const raiz = m[1] + (m[2] === '♯' ? '#' : m[2] === '♭' ? 'b' : m[2]);
+    return (BEMOL[raiz] || raiz) + (m[3] ? 'm' : '');
+  }
+  // Distancia entre dos textos (errores de letra), con tope para ir rápido.
+  function lev(a, b, max = 3) {
+    if (Math.abs(a.length - b.length) > max) return max + 1;
+    let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+    for (let i = 1; i <= a.length; i++) {
+      const cur = [i];
+      let best = i;
+      for (let j = 1; j <= b.length; j++) { cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); best = Math.min(best, cur[j]); }
+      if (best > max) return max + 1;
+      prev = cur;
+    }
+    return prev[b.length];
+  }
+  // Qué tan bien coincide lo escrito con un canto (0 a 100).
+  function puntos(q, song) {
+    const t = norm(q);
+    if (t.length < 2) return 0;
+    const tit = norm(song.title);
+    if (!tit) return 0;
+    if (t === tit) return 100;
+    let p = 0;
+    if (t.length >= 4 && (tit.startsWith(t) || t.startsWith(tit))) p = Math.max(p, 90);
+    if (t.length >= 6 && tit.includes(t)) p = Math.max(p, 85);
+    if (t.length >= 6 && lev(t, tit, 2) <= 2) p = Math.max(p, 88);
+    const A = palabras(t), B = new Set(palabras(tit));
+    if (A.length) {
+      const comunes = A.filter((w) => B.has(w) || [...B].some((b) => w.length >= 5 && lev(w, b, 1) <= 1)).length;
+      if (comunes === A.length && A.length >= 2) p = Math.max(p, 82);
+      else p = Math.max(p, Math.round((comunes / Math.max(A.length, B.size)) * 75));
+      // Todas las palabras del título están en lo escrito («que dulce es estar en tu presencia» →
+      // «En tu presencia»): puede ser ese canto o no, así que solo se ofrece como opción.
+      if (B.size && [...B].every((b) => A.includes(b))) p = Math.max(p, 55);
+    }
+    // Una frase de la letra («entonces la iglesia», «desierto en paraíso»).
+    if (A.length >= 2 && t.length >= 8) {
+      const letra = norm(song.text);
+      const k = letra.indexOf(t);
+      if (k >= 0) p = Math.max(p, k < 300 ? 80 : 74);
+    }
+    return p;
+  }
+  // Las formas posibles de leer una línea: tono al principio, tono al final o sin tono.
+  function lecturas(linea) {
+    const out = [{ key: '', q: linea }];
+    let m = /^([A-G][#♯b♭]?m?)\s+(.+)$/.exec(linea);
+    if (m && tono(m[1])) out.push({ key: tono(m[1]), q: m[2] });
+    m = /^(.+?)\s*(?:\(\s*|[-–—]\s*|,?\s+(?:tono|en)\s+)([A-G][#♯b♭]?m?)\s*\)?$/i.exec(linea);
+    if (m && tono(m[2])) out.push({ key: tono(m[2]), q: m[1] });
+    m = /^(.+?)[,.]?\s+tono\s+([A-G][#♯b♭]?m?)\b/i.exec(linea);
+    if (m && tono(m[2])) out.push({ key: tono(m[2]), q: m[1] });
+    return out;
+  }
+  // Lee el texto pegado: una entrada por línea que parece canto, en orden.
+  function leer(texto, cantos) {
+    const res = [];
+    for (const bruta of String(texto || '').replace(/\r/g, '').split('\n')) {
+      const linea = bruta.replace(/[*_~`]/g, ' ').replace(/^\s*(?:[-•·▪►✓✔☑️]+|\d{1,2}\s*[.)\-:]+)\s*/u, '').replace(/[\u{1F300}-\u{1FAFF}☀-➿]/gu, ' ').replace(/\s+/g, ' ').trim();
+      if (!linea || !/[a-záéíóúñ]/i.test(linea)) continue;
+      if (/:\s*$/.test(linea) || SECCION.test(norm(linea))) continue;
+      let mejor = { key: '', q: linea, lista: [] };
+      for (const l of lecturas(linea)) {
+        const lista = cantos.map((s) => ({ s, p: puntos(l.q, s) })).filter((x) => x.p >= 45).sort((a, b) => b.p - a.p).slice(0, 4);
+        const top = lista[0] ? lista[0].p : 0;
+        const topMejor = mejor.lista[0] ? mejor.lista[0].p : 0;
+        // A igualdad, gana la lectura con tono (es el formato de las listas).
+        if (top > topMejor || (top === topMejor && top > 0 && l.key && !mejor.key)) mejor = { ...l, lista };
+      }
+      // Sin ningún canto parecido, igual se guarda el tono si la línea lo trae («D quiero más»).
+      if (!mejor.lista.length) { const conKey = lecturas(linea).find((l) => l.key); if (conKey) mejor = { ...conKey, lista: [] }; }
+      const [a, b] = mejor.lista;
+      // Se elige solo cuando hay UN canto posible, o uno claramente mejor que los demás. Si hay
+      // varios parecidos, no se elige ninguno: la persona escoge (viendo la letra y el video).
+      const claro = a && (!b || (a.p >= 80 && b.p <= a.p - 8));
+      const estado = !a ? 'no' : claro ? 'si' : 'duda';
+      res.push({ linea, key: mejor.key, opciones: mejor.lista.map((x) => x.s), elegido: claro ? a.s.id : '', estado });
+    }
+    // Si la lista viene con tonos, las líneas sin tono que no son ningún canto son texto de más
+    // (saludos, nombres, botones de WhatsApp que salen en una captura): no se muestran.
+    const conTono = res.filter((r) => r.key).length;
+    if (conTono >= 3 && conTono >= res.length * 0.5) return res.filter((r) => r.key || r.estado !== 'no');
+    return res;
+  }
+  return { leer, tono, norm };
+})();
+
+// Leer el texto de una foto o captura de la lista (en el mismo teléfono, sin mandarla a ningún
+// lado). Usa Tesseract.js con el español; la primera vez baja ~2 MB y luego queda guardado.
+const OCR_JS = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+let ocrWorkerP = null;
+function ocrWorker(onProg) {
+  if (!ocrWorkerP) {
+    ocrWorkerP = (async () => {
+      if (!window.Tesseract) await new Promise((ok, mal) => { const s = document.createElement('script'); s.src = OCR_JS; s.onload = ok; s.onerror = () => mal(new Error('No se pudo bajar el lector de imágenes')); document.head.appendChild(s); });
+      return window.Tesseract.createWorker('spa', 1, { logger: (m) => { if (ocrWorker.prog) ocrWorker.prog(m); } });
+    })();
+    ocrWorkerP.catch(() => { ocrWorkerP = null; });
+  }
+  ocrWorker.prog = onProg;
+  return ocrWorkerP;
+}
+// Vista previa de la imagen con un marco para recortarla (opcional): se arrastran las esquinas o
+// el marco entero. Devuelve el recorte en proporciones ({x,y,w,h} de 0 a 1), o null si se cancela.
+function recortarImagen(file) {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const ov = document.createElement('div');
+    ov.className = 'crop-ov';
+    ov.innerHTML = `<div class="crop-box">
+      <h3>${ic('image')} Vista previa</h3>
+      <p class="muted small">Arrastra las esquinas para dejar solo la lista (si hace falta).</p>
+      <div class="crop-stage"><img alt="Imagen elegida"><div class="crop-rect"><i data-h="nw"></i><i data-h="ne"></i><i data-h="sw"></i><i data-h="se"></i></div></div>
+      <div class="crop-acts"><button type="button" class="btn ghost" data-c="cancel">Cancelar</button><button type="button" class="btn ghost" data-c="todo">Toda</button><button type="button" class="btn" data-c="ok">${ic('check')} Leer</button></div>
+    </div>`;
+    document.body.appendChild(ov);
+    requestAnimationFrame(() => ov.classList.add('on'));
+    const img = ov.querySelector('img');
+    const stage = ov.querySelector('.crop-stage');
+    const rect = ov.querySelector('.crop-rect');
+    let r = { x: 0, y: 0, w: 1, h: 1 };
+    const MIN = 0.08;
+    const pinta = () => { rect.style.left = r.x * 100 + '%'; rect.style.top = r.y * 100 + '%'; rect.style.width = r.w * 100 + '%'; rect.style.height = r.h * 100 + '%'; };
+    img.onload = () => pinta();
+    img.src = url;
+    let drag = null;
+    stage.addEventListener('pointerdown', (e) => {
+      const h = e.target.closest('[data-h]');
+      if (!h && !e.target.closest('.crop-rect')) return;
+      e.preventDefault();
+      const b = img.getBoundingClientRect();
+      drag = { h: h ? h.dataset.h : 'move', x0: e.clientX, y0: e.clientY, r0: { ...r }, bw: b.width, bh: b.height };
+      stage.setPointerCapture(e.pointerId);
+      rect.classList.add('activo');
+    });
+    stage.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      const dx = (e.clientX - drag.x0) / drag.bw, dy = (e.clientY - drag.y0) / drag.bh;
+      const o = drag.r0;
+      let { x, y, w, h } = o;
+      if (drag.h === 'move') { x = Math.min(Math.max(0, o.x + dx), 1 - o.w); y = Math.min(Math.max(0, o.y + dy), 1 - o.h); }
+      else {
+        if (drag.h.includes('w')) { x = Math.min(Math.max(0, o.x + dx), o.x + o.w - MIN); w = o.x + o.w - x; }
+        if (drag.h.includes('e')) w = Math.min(Math.max(MIN, o.w + dx), 1 - o.x);
+        if (drag.h.includes('n')) { y = Math.min(Math.max(0, o.y + dy), o.y + o.h - MIN); h = o.y + o.h - y; }
+        if (drag.h.includes('s')) h = Math.min(Math.max(MIN, o.h + dy), 1 - o.y);
+      }
+      r = { x, y, w, h };
+      pinta();
+    });
+    const suelta = () => { drag = null; rect.classList.remove('activo'); };
+    stage.addEventListener('pointerup', suelta);
+    stage.addEventListener('pointercancel', suelta);
+    const cierra = (val) => {
+      ov.classList.remove('on');
+      setTimeout(() => { ov.remove(); URL.revokeObjectURL(url); }, 320);
+      resolve(val);
+    };
+    ov.querySelector('.crop-acts').onclick = (e) => {
+      const b = e.target.closest('[data-c]');
+      if (!b) return;
+      haptic(5);
+      if (b.dataset.c === 'cancel') cierra(null);
+      else if (b.dataset.c === 'todo') { r = { x: 0, y: 0, w: 1, h: 1 }; rect.classList.add('anim'); pinta(); setTimeout(() => rect.classList.remove('anim'), 350); }
+      else cierra(r.w > 0.98 && r.h > 0.98 ? { x: 0, y: 0, w: 1, h: 1 } : r);
+    };
+  });
+}
+// La imagen se prepara para leerla mejor: solo el recorte elegido, tamaño cómodo, en grises y, si
+// es de fondo oscuro (capturas en modo oscuro), con los colores invertidos.
+function ocrPreparar(file, recorte) {
+  return new Promise((ok, mal) => {
+    const img = new Image();
+    img.onload = () => {
+      const rc = recorte || { x: 0, y: 0, w: 1, h: 1 };
+      const sx = Math.round(rc.x * img.width), sy = Math.round(rc.y * img.height);
+      const sw = Math.max(1, Math.round(rc.w * img.width)), sh = Math.max(1, Math.round(rc.h * img.height));
+      // Ancho de ~950 px basta para leer bien y es el doble de rápido en el teléfono que la imagen
+      // completa (las capturas del iPhone miden 1290 px o más). Las imágenes chicas se agrandan.
+      const k = sw > 950 ? 950 / sw : sw < 700 ? Math.min(2, 950 / sw) : 1;
+      const c = document.createElement('canvas');
+      c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+      const g = c.getContext('2d', { willReadFrequently: true });
+      g.drawImage(img, sx, sy, sw, sh, 0, 0, c.width, c.height);
+      const d = g.getImageData(0, 0, c.width, c.height);
+      const px = d.data;
+      let suma = 0;
+      for (let i = 0; i < px.length; i += 4) { const y = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]; px[i] = px[i + 1] = px[i + 2] = y; suma += y; }
+      if (suma / (px.length / 4) < 110) for (let i = 0; i < px.length; i += 4) px[i] = px[i + 1] = px[i + 2] = 255 - px[i];
+      g.putImageData(d, 0, 0);
+      URL.revokeObjectURL(img.src);
+      ok(c);
+    };
+    img.onerror = () => mal(new Error('No se pudo abrir la imagen'));
+    img.src = URL.createObjectURL(file);
+  });
+}
+async function leerImagen(file, onProg, recorte) {
+  const w = await ocrWorker((m) => {
+    if (m.status === 'recognizing text') onProg(`Leyendo la lista… ${Math.round((m.progress || 0) * 100)}%`);
+    else if (/load/i.test(m.status || '')) onProg('Preparando el lector (solo la primera vez)…');
+  });
+  onProg('Leyendo la lista…');
+  const { data } = await w.recognize(await ocrPreparar(file, recorte));
+  // Solo las líneas con letras (se van rayas, puntos y restos de la captura).
+  return String(data.text || '').split('\n').map((l) => l.replace(/[|_~=]+/g, ' ').replace(/\s+/g, ' ').trim()).filter((l) => /[a-záéíóúñ]{2}/i.test(l)).join('\n').trim();
+}
+
+function pasteList(date, items) {
+  let filas = [];
+  openSheet(`<h2>${ic('clipboard')} Pegar lista</h2>
+    <p class="muted small" style="margin:0 0 8px">Escribe o pega la lista, o súbela en una foto o captura. Un canto por línea; si trae el tono al inicio («Dm tu has sido fiel») se usa ese tono. Los títulos como «Adoración:» se saltan.</p>
+    <div class="pl-in">
+      <textarea id="plText" rows="9" placeholder="Escribe o pega la lista aquí…&#10;&#10;Dm tu has sido fiel&#10;Em yo haré una fiesta&#10;Adoración:&#10;D Dame de beber"></textarea>
+      <label class="pl-foto" title="Subir una foto o captura de la lista">${ic('camera')}<span>Subir foto o captura</span><input type="file" id="plFoto" accept="image/*" hidden></label>
+    </div>
+    <div class="pl-ocr" id="plOcr" hidden></div>
+    <div id="plPrev"></div>
+    <button class="btn" id="plOk" disabled>Revisar la lista</button>
+    <button class="btn ghost" id="plCancel">Cancelar</button>`, () => {
+    const enLista = new Set(items.map((x) => x.songId));
+    let abierta = -1; // la línea con sus opciones desplegadas
+    // Las primeras líneas de la letra, para reconocer el canto de un vistazo.
+    const probadita = (s) => {
+      // (Un verso o coro: el «Intro» o el «Final» suelen ser indicaciones, no letra.)
+      const secs = sectionsOf(s.text || '').filter((x) => x.body.trim());
+      const sec = secs.find((x) => !['intro', 'final'].includes(secKind(x.name))) || secs[0];
+      return sec ? sec.body.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 2).join(' / ') : '';
+    };
+    // Cada canto posible: su letra (un poco y completa) y su video, para decidir antes de elegirlo.
+    const opcionesHtml = (f, i) => `<div class="pl-opts">${f.opciones.map((s) => {
+      const on = s.id === f.elegido;
+      const yt = ytId(s.youtube || '');
+      const p = probadita(s);
+      return `<div class="pl-opt${on ? ' on' : ''}">
+        <div class="pl-opt-h"><b>${esc(s.title)}</b><small>${esc(s.author || 'Autor sin indicar')} · tono ${esc(s.key || '—')}</small></div>
+        ${p ? `<div class="pl-opt-lyr">«${esc(p)}…»</div>` : ''}
+        <div class="pl-opt-acts">
+          ${s.text ? `<button type="button" data-pllet="${s.id}">${ic('type')} Letra</button>` : ''}
+          ${yt ? `<button type="button" data-plvid="${yt}">${ic('play')} Video</button>` : ''}
+          <button type="button" class="pri" data-plpick="${i}|${s.id}">${on ? ic('check') + ' Elegido' : 'Elegir este'}</button>
+        </div>
+        <div class="pl-opt-x"></div>
+      </div>`;
+    }).join('')}<button type="button" class="pl-skip" data-plpick="${i}|">Ninguno · saltar esta línea</button></div>`;
+    const render = () => {
+      const box = $('plPrev');
+      if (!filas.length) { box.innerHTML = ''; $('plOk').textContent = 'Revisar la lista'; $('plOk').disabled = !$('plText').value.trim(); return; }
+      const n = filas.filter((f) => f.elegido).length;
+      box.innerHTML = `<div class="pl-res">${filas.map((f, i) => {
+        const song = f.elegido ? songById(f.elegido) : null;
+        const repetido = song && enLista.has(song.id);
+        const icono = f.estado === 'duda' && !f.elegido ? '<span class="pl-ic duda">?</span>' : !f.elegido ? '<span class="pl-ic no">✕</span>' : f.estado === 'duda' ? '<span class="pl-ic duda">?</span>' : '<span class="pl-ic si">✓</span>';
+        const elegir = f.opciones.length
+          ? `<button type="button" class="pl-pick${abierta === i ? ' open' : ''}" data-plopen="${i}"><b>${song ? esc(song.title) : 'Elegir…'}</b><span>${f.opciones.length > 1 ? f.opciones.length + ' opciones' : 'ver'} <i>›</i></span></button>`
+          : '<span class="pl-no">No está en el repertorio · se salta</span>';
+        const nota = f.ya && !f.elegido ? '<span class="pl-no">Ya está en la lista · se salta (tócalo para repetirlo)</span>'
+          : f.estado === 'duda' && !f.elegido ? '<span class="pl-no">¿Es alguno de estos? Tócalo para ver letra y video.</span>'
+          : repetido ? '<span class="pl-no">Ya está en la lista: se agregará otra vez</span>' : '';
+        return `<div class="pl-row${!f.elegido ? ' off' : ''}${abierta === i ? ' abierta' : ''}" data-row="${i}">${icono}<div class="pl-t"><small>${esc(f.linea)}</small>${elegir}${nota}</div><span class="pl-key">${esc(f.key || (song && song.key) || '—')}</span>${abierta === i ? opcionesHtml(f, i) : ''}</div>`;
+      }).join('')}</div>`;
+      // Los que tienen varias opciones y aún no se eligieron (se pueden dejar sin elegir: se saltan).
+      const faltan = filas.filter((f) => f.estado === 'duda' && !f.elegido && !f.ya).length;
+      $('plOk').disabled = !n;
+      $('plOk').textContent = (n ? `Agregar ${n} canto${n === 1 ? '' : 's'} en este orden` : 'Ningún canto para agregar') + (faltan ? ` · ${faltan} por elegir` : '');
+    };
+    // Desplegar / elegir / ver letra o video (sin redibujar todo, así el video no se corta).
+    $('plPrev').onclick = (e) => {
+      const ab = e.target.closest('[data-plopen]');
+      if (ab) {
+        const i = Number(ab.dataset.plopen);
+        abierta = abierta === i ? -1 : i;
+        haptic(5);
+        render();
+        const opts = $('plPrev').querySelector('.pl-row.abierta .pl-opts');
+        if (opts) { gpSlide(opts, true); rlog('abrió opciones de', filas[i].linea, '→', filas[i].opciones.map((s) => s.title).join(' / ')); }
+        return;
+      }
+      const pk = e.target.closest('[data-plpick]');
+      if (pk) {
+        const [i, id] = pk.dataset.plpick.split('|');
+        const f = filas[Number(i)];
+        f.elegido = id;
+        if (id) f.estado = 'si';
+        abierta = -1;
+        haptic(8);
+        rlog('eligió', f.linea, '→', id ? (songById(id) || {}).title : '(saltar)');
+        render();
+        return;
+      }
+      const lt = e.target.closest('[data-pllet]');
+      if (lt) {
+        const x = lt.closest('.pl-opt').querySelector('.pl-opt-x');
+        if (x.dataset.k === 'letra') { x.innerHTML = ''; x.dataset.k = ''; return; }
+        const s = songById(lt.dataset.pllet) || {};
+        x.dataset.k = 'letra';
+        x.innerHTML = `<div class="pl-letra">${sectionsOf(s.text || '').map((sec) => `<div>${sec.name ? secChip(sec.name) : ''}<p>${esc(sec.body)}</p></div>`).join('')}</div>`;
+        gpSlide(x.firstElementChild, true);
+        return;
+      }
+      const vd = e.target.closest('[data-plvid]');
+      if (vd) {
+        const x = vd.closest('.pl-opt').querySelector('.pl-opt-x');
+        if (x.dataset.k === 'video') { x.innerHTML = ''; x.dataset.k = ''; return; }
+        x.dataset.k = 'video';
+        x.innerHTML = navigator.onLine
+          ? `<div class="video"><iframe src="https://www.youtube-nocookie.com/embed/${vd.dataset.plvid}?rel=0&playsinline=1&autoplay=1" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe></div>`
+          : '<div class="small muted">El video necesita internet.</div>';
+        gpSlide(x.firstElementChild, true);
+      }
+    };
+    let t = null;
+    // Lo que ya está en la lista se salta (se puede elegir igual si se quiere repetir).
+    const leer = () => ListaPegada.leer($('plText').value, songs).map((f) => (f.elegido && enLista.has(f.elegido) ? { ...f, ya: true, elegido: '' } : f));
+    rlog('abrió «Pegar lista»', { cantosEnRepertorio: songs.length, yaEnLista: items.length });
+    let tLog = null;
+    $('plText').oninput = () => {
+      clearTimeout(t); t = setTimeout(() => { filas = leer(); render(); }, 250);
+      clearTimeout(tLog); tLog = setTimeout(() => rlog('vista previa:', filas.map((f) => `${f.estado === 'si' ? '✓' : f.estado === 'duda' ? '?' : '✕'} ${f.linea} → ${(songById(f.elegido) || {}).title || '(salta)'} ${f.key || ''}`).join(' | ')), 1500);
+    };
+    // Foto o captura: se lee el texto y se pone en el cuadro (se puede corregir antes de agregar).
+    $('plFoto').onchange = async (e) => {
+      const file = e.target.files[0];
+      e.target.value = '';
+      if (!file) { rlog('foto: no eligió ninguna'); return; }
+      rlog('foto elegida', { nombre: file.name, tipo: file.type, kb: Math.round(file.size / 1024) });
+      // Primero la vista previa, para recortar si hace falta.
+      const recorte = await recortarImagen(file);
+      if (!recorte) { rlog('canceló la vista previa'); return; }
+      rlog('recorte', recorte.w > 0.98 && recorte.h > 0.98 ? 'toda la imagen' : recorte);
+      const t0 = Date.now();
+      const st = $('plOcr');
+      let ultimo = '';
+      const msg = (m) => { if (m.replace(/\d+%/, '') !== ultimo) { ultimo = m.replace(/\d+%/, ''); rlog('lector:', m); } if (st) { st.hidden = false; st.innerHTML = `<span class="spin-mini"></span>${esc(m)}`; } };
+      $('plFoto').closest('.pl-foto').classList.add('busy');
+      msg(navigator.onLine ? 'Preparando el lector…' : 'Sin internet: el lector necesita internet la primera vez.');
+      try {
+        const texto = await leerImagen(file, msg, recorte);
+        rlog(`leyó en ${((Date.now() - t0) / 1000).toFixed(1)} s:`, texto);
+        if (!$('plText')) return;
+        if (!texto) { msg('No se encontró texto en la imagen. Prueba con una captura más clara.'); return; }
+        const ta = $('plText');
+        ta.value = (ta.value.trim() ? ta.value.trim() + '\n' : '') + texto;
+        ta.dispatchEvent(new Event('input'));
+        st.innerHTML = `${ic('check')} Listo: revisa abajo lo que encontró. Si algo se leyó mal, corrígelo en el cuadro.`;
+        haptic(8);
+      } catch (err) {
+        rlog('ERROR al leer la imagen:', (err && (err.stack || err.message)) || String(err));
+        msg((err && err.message) || 'No se pudo leer la imagen');
+      } finally {
+        const b = $('plFoto') && $('plFoto').closest('.pl-foto');
+        if (b) b.classList.remove('busy');
+      }
+    };
+    $('plCancel').onclick = closeSheet;
+    $('plOk').onclick = async () => {
+      if (!filas.length) { filas = leer(); render(); return; }
+      const agregar = filas.filter((f) => f.elegido);
+      // (Los que ya estaban en la lista no cuentan como «no está en el repertorio».)
+      const saltados = filas.filter((f) => !f.elegido && !f.ya).map((f) => f.linea);
+      let order = items.reduce((m, x) => Math.max(m, Number(x.order) || 0), 0);
+      const work = (async () => {
+        for (const f of agregar) {
+          const song = songById(f.elegido) || {};
+          await api.addItem(date, { songId: f.elegido, order: ++order, key: f.key || song.key || '', youtube: song.youtube || '', notes: '', by: user.uid, byName: me.name });
+        }
+      })();
+      try { await busy($('plOk'), work); } catch (err) { rlog('ERROR al agregar:', String(err && err.message)); toast('No se pudo agregar: revisa la conexión'); return; }
+      rlog('agregó', agregar.length, 'cantos; saltó', saltados.length);
+      haptic(10);
+      if (!saltados.length) { closeSheet(); toast(`✓ ${agregar.length} canto${agregar.length === 1 ? '' : 's'} agregados en orden`); return; }
+      // Los que no estaban: para agregarlos después (crearlos o sugerirlos).
+      const texto = saltados.join('\n');
+      openSheet(`<h2>${ic('check')} ${agregar.length} agregados</h2>
+        <p class="muted small" style="margin:0 0 8px">Estos no están en el repertorio y se saltaron. Agrégalos después con «Canto nuevo»:</p>
+        <div class="hint" style="white-space:pre-line;user-select:text">${esc(texto)}</div>
+        <button class="btn" id="plCopy">${ic('copy')} Copiar</button>
+        <button class="btn ghost" id="plDone">Listo</button>`, () => {
+        $('plCopy').onclick = async () => { try { await navigator.clipboard.writeText(texto); toast('✓ Copiado'); } catch { toast('Mantén presionado el texto para copiarlo'); } };
+        $('plDone').onclick = closeSheet;
+      });
+    };
+    render();
+    setTimeout(() => { const ta = $('plText'); if (ta) ta.focus(); }, 300);
+  });
 }
 
 // ======================================================================================
